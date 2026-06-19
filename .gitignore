@@ -1,0 +1,34 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+.env.local
+debug.keystore
+
+# Signing keys & secrets — never commit
+*.jks
+*.keystore
+keystore.properties
+
+# All module build outputs
+**/build/
+
+# Python tooling caches
+__pycache__/
+*.pyc
+
+# Internal planning / checklist docs (not for public repo)
+CURIO_FEATURE_CHECKLIST.md

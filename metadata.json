@@ -1,0 +1,6 @@
+{
+  "name": "Curio",
+  "description": "On-device AI bookmark assistant with OCR, category sorting and summaries powered by xAI Grok, finished in liquid-glass Material You theme.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_XAI_API"]
+}

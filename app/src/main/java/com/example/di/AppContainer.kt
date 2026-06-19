@@ -1,0 +1,143 @@
+package com.example.di
+
+import android.content.Context
+import com.example.data.embedding.EmbeddingService
+import com.example.data.remote.ArxivClient
+import com.example.data.remote.GithubApi
+import com.example.data.remote.HuggingFaceApi
+import com.example.data.remote.TokenStore
+import com.example.data.remote.XAuthApi
+import com.example.data.remote.XAiApi
+import com.example.data.repo.AuthRepositoryImpl
+import com.example.data.source.SourceResolver
+import com.example.domain.repo.AuthRepository
+import com.example.domain.usecase.LoginUseCase
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.moshi.MoshiConverterFactory
+
+class AppContainer(private val context: Context) {
+
+    val tokenStore: TokenStore by lazy {
+        TokenStore(context.applicationContext)
+    }
+
+    private val moshi: Moshi by lazy {
+        Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+    }
+
+    private val okHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val retrofit: Retrofit by lazy {
+        Retrofit.Builder().baseUrl("https://api.twitter.com/")
+            .client(okHttpClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+    }
+
+    private val xAiRetrofit: Retrofit by lazy {
+        Retrofit.Builder().baseUrl("https://api.x.ai/")
+            .client(okHttpClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+    }
+
+    private val githubRetrofit: Retrofit by lazy {
+        Retrofit.Builder().baseUrl("https://api.github.com/")
+            .client(okHttpClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+    }
+
+    private val huggingFaceRetrofit: Retrofit by lazy {
+        Retrofit.Builder().baseUrl("https://huggingface.co/api/")
+            .client(okHttpClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+    }
+
+    private val xAuthApi: XAuthApi by lazy { retrofit.create(XAuthApi::class.java) }
+
+    val authRepository: AuthRepository by lazy { AuthRepositoryImpl(xAuthApi, tokenStore) }
+    val loginUseCase: LoginUseCase by lazy { LoginUseCase(authRepository) }
+
+    val xAiApi: XAiApi by lazy { xAiRetrofit.create(XAiApi::class.java) }
+
+    val ocrAnalyzer: com.example.data.ocr.OcrAnalyzer by lazy { com.example.data.ocr.OcrAnalyzer() }
+
+    val aiAnalyzer: com.example.data.XAiAnalyzer by lazy {
+        com.example.data.XAiAnalyzer(xAiApi)
+    }
+
+    val grokImageService: com.example.data.GrokImageService by lazy {
+        com.example.data.GrokImageService(xAiApi)
+    }
+
+    // On-device-vs-cloud generation: device-gated selector is what gets injected.
+    private val genAiAvailability: com.example.data.ai.GenAiAvailability by lazy {
+        com.example.data.ai.GenAiAvailability(context.applicationContext)
+    }
+    private val cloudTextGenerator: com.example.data.ai.CloudTextGenerator by lazy {
+        com.example.data.ai.CloudTextGenerator(aiAnalyzer)
+    }
+    private val localTextGenerator: com.example.data.ai.LocalKeywordTextGenerator by lazy {
+        com.example.data.ai.LocalKeywordTextGenerator(aiAnalyzer)
+    }
+    private val nanoTextGenerator: com.example.data.ai.NanoTextGenerator by lazy {
+        com.example.data.ai.NanoTextGenerator(genAiAvailability, localTextGenerator)
+    }
+    val textGenerator: com.example.data.ai.TextGeneratorSelector by lazy {
+        com.example.data.ai.TextGeneratorSelector(
+            nanoTextGenerator, cloudTextGenerator, localTextGenerator, genAiAvailability
+        )
+    }
+
+    val embeddingService: EmbeddingService by lazy { EmbeddingService(xAiApi) }
+
+    // On-device EmbeddingGemma (gated) with cloud fallback — the selector is what gets injected.
+    val embeddingModelManager: com.example.data.embedding.EmbeddingModelManager by lazy {
+        com.example.data.embedding.EmbeddingModelManager(context.applicationContext, tokenStore)
+    }
+    private val embeddingAvailability: com.example.data.embedding.EmbeddingAvailability by lazy {
+        com.example.data.embedding.EmbeddingAvailability(embeddingModelManager)
+    }
+    // Exposed directly so the charging-gated index worker can embed on-device ONLY (no cloud fallback).
+    val onDeviceEmbeddingProvider: com.example.data.embedding.OnDeviceEmbeddingProvider by lazy {
+        com.example.data.embedding.OnDeviceEmbeddingProvider(embeddingAvailability, embeddingModelManager)
+    }
+    val embeddingProvider: com.example.data.embedding.EmbeddingProvider by lazy {
+        com.example.data.embedding.EmbeddingProviderSelector(onDeviceEmbeddingProvider, embeddingService)
+    }
+
+    val arxivClient: ArxivClient by lazy { ArxivClient(okHttpClient) }
+
+    private val githubApi: GithubApi by lazy { githubRetrofit.create(GithubApi::class.java) }
+
+    private val huggingFaceApi: HuggingFaceApi by lazy {
+        huggingFaceRetrofit.create(HuggingFaceApi::class.java)
+    }
+
+    val sourceResolver: SourceResolver by lazy {
+        SourceResolver(arxivClient, githubApi, huggingFaceApi)
+    }
+
+    val database: com.example.data.local.AppDatabase by lazy {
+        com.example.data.local.AppDatabase.getDatabase(context.applicationContext)
+    }
+
+    val firebaseSyncManager: com.example.data.remote.FirebaseSyncManager by lazy {
+        com.example.data.remote.FirebaseSyncManager(context.applicationContext)
+    }
+
+    private val xBookmarksApi: com.example.data.remote.XBookmarksApi by lazy {
+        retrofit.create(com.example.data.remote.XBookmarksApi::class.java)
+    }
+
+    val bookmarkRepository: com.example.domain.repo.BookmarkRepository by lazy {
+        com.example.data.repo.BookmarkRepositoryImpl(
+            xBookmarksApi, database.bookmarkDao(), database.spaceDao(), tokenStore, firebaseSyncManager, xAuthApi
+        )
+    }
+}

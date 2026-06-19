@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Curio foreground: a bookmark ribbon with an AI "spark" knocked out of it.
+     evenOdd makes the sparkle a hole, so the black background shows through it
+     (X theme). Geometry lives in the 108x108 adaptive viewport and stays well
+     inside the 66dp safe zone, so no launcher mask ever clips it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M46,30 L62,30 Q71,30 71,39 L71,80 L54,66 L37,80 L37,39 Q37,30 46,30 Z M54,35 Q56.40,45.60 67,48 Q56.40,50.40 54,61 Q51.60,50.40 41,48 Q51.60,45.60 54,35 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="30"
+                android:endX="54" android:endY="80">
+                <item android:offset="0.0" android:color="#FFFFFFFF" />
+                <item android:offset="1.0" android:color="#FFEDEDF2" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
