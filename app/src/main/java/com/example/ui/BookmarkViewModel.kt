@@ -498,10 +498,8 @@ class BookmarkViewModel(
                 Log.e(TAG, "OCR processing failed for bookmark $bookmarkId", e)
                 _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "OCR processing failed")
             } finally {
-                // Ensure the state is never left in Processing regardless of code path taken.
-                if (_analysisState.value is AnalysisUiState.Processing) {
-                    _analysisState.value = AnalysisUiState.Idle
-                }
+                // Unconditionally clear any residual Processing state regardless of code path taken.
+                _analysisState.value = AnalysisUiState.Idle
             }
         }
     }
@@ -804,18 +802,29 @@ class BookmarkViewModel(
      */
     fun generateImagenImage(bookmarkId: String) {
         viewModelScope.launch {
-            _analysisState.value = AnalysisUiState.Processing(bookmarkId)
-            val bookmark = rawBookmarks.value.firstOrNull { it.id == bookmarkId }
-            val prompt = grokImageService.promptForCategory(
-                category = bookmark?.category,
-                title = bookmark?.sourceTitle ?: bookmark?.title
-            )
-            val generated = grokImageService.generate(prompt)
-            if (generated != null) {
-                _imagenUrls.value = _imagenUrls.value + (bookmarkId to generated.url)
+            try {
+                _analysisState.value = AnalysisUiState.Processing(bookmarkId)
+                val bookmark = rawBookmarks.value.firstOrNull { it.id == bookmarkId }
+                val prompt = grokImageService.promptForCategory(
+                    category = bookmark?.category,
+                    title = bookmark?.sourceTitle ?: bookmark?.title
+                )
+                val generated = grokImageService.generate(prompt)
+                if (generated != null) {
+                    _imagenUrls.value = _imagenUrls.value + (bookmarkId to generated.url)
+                }
+                _imagenGeneratedIds.value = _imagenGeneratedIds.value + bookmarkId
+                _analysisState.value = AnalysisUiState.Success(bookmarkId)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e(TAG, "Image generation failed for $bookmarkId", e)
+                _imagenGeneratedIds.value = _imagenGeneratedIds.value + bookmarkId
+                _analysisState.value = AnalysisUiState.Idle
+            } finally {
+                if (_analysisState.value is AnalysisUiState.Processing) {
+                    _analysisState.value = AnalysisUiState.Idle
+                }
             }
-            _imagenGeneratedIds.value = _imagenGeneratedIds.value + bookmarkId
-            _analysisState.value = AnalysisUiState.Success(bookmarkId)
         }
     }
 
