@@ -250,6 +250,49 @@ internal fun SettingsScreen(
             }
         }
 
+        // xAI API Key Card — lets the user run AI features on their OWN key instead of one
+        // baked into the APK (the key is stored AES-GCM-encrypted via TokenStore).
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .glassSurface(tier = resolvedTier)
+                .padding(16.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val keyConfigured by viewModel.xaiKeyConfigured.collectAsStateWithLifecycle()
+                val keyInput = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+                Text(
+                    text = "xAI API Key",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = if (keyConfigured) "A key is configured. AI analysis, chat and image generation are enabled."
+                    else "Add your own xAI key (console.x.ai) to enable cloud AI. Stored encrypted on this device.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = keyInput.value,
+                    onValueChange = { keyInput.value = it },
+                    label = { Text("xai-…") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("xai_key_input")
+                )
+                androidx.compose.material3.Button(
+                    onClick = {
+                        viewModel.saveXaiKey(keyInput.value)
+                        keyInput.value = ""
+                    },
+                    enabled = keyInput.value.isNotBlank(),
+                    modifier = Modifier.testTag("xai_key_save")
+                ) { Text("Save key") }
+            }
+        }
+
         // Active Session Check & Clear Local Cache Card
         Box(
             modifier = Modifier

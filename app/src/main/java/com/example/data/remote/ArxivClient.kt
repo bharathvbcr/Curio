@@ -17,11 +17,15 @@ data class ArxivMeta(
     val categories: List<String>
 )
 
-class ArxivClient(private val client: OkHttpClient) {
+class ArxivClient(
+    private val client: OkHttpClient,
+    // Injectable so tests can point at a MockWebServer; defaults to the live arXiv API.
+    private val baseUrl: String = "https://export.arxiv.org/api/query"
+) {
 
     suspend fun fetchPaper(arxivId: String): ArxivMeta? = withContext(Dispatchers.IO) {
         val cleanId = arxivId.replace(Regex("v\\d+$"), "").trim()
-        val url = "https://export.arxiv.org/api/query?id_list=$cleanId&max_results=1"
+        val url = "$baseUrl?id_list=$cleanId&max_results=1"
         try {
             val response = client.newCall(Request.Builder().url(url).build()).execute()
             if (!response.isSuccessful) return@withContext null

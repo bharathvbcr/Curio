@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.HttpException
@@ -41,6 +43,11 @@ class BookmarkRepositoryImpl(
 ) : BookmarkRepository {
 
     private val cursors = ConcurrentHashMap<String, String>()
+
+    // Serializes token refresh. X rotates the refresh token on every use, so two concurrent
+    // 401s must not both call refresh with the same (now single-use) token — the loser would
+    // invalidate the session. Holders re-check the stored token under the lock.
+    private val refreshMutex = Mutex()
 
     // Cloud mirroring is best-effort and must never block a local write. The mock
     // Firestore backend in this build can hang indefinitely on .set(), which would
@@ -88,6 +95,10 @@ class BookmarkRepositoryImpl(
             var firebaseSyncSuccess = false
             var xSyncSuccess = false
             var lastError: Exception? = null
+            // The X API is the source of truth; Firebase is a best-effort mirror. Track the X
+            // failure separately so a Firebase pull that merely timed out can't mask a real X
+            // sync error and report a false "success" to the user.
+            var xSyncError: Exception? = null
 
             // 1. Firebase pull (bounded — a hung Firestore call must not block the X sync)
             try {
@@ -97,8 +108,8 @@ class BookmarkRepositoryImpl(
                 if (cloudBookmarks == null) {
                     Log.w("BookmarkRepo", "Firebase pull timed out after ${FIREBASE_TIMEOUT_MS}ms; continuing with X sync")
                 } else if (cloudBookmarks.isNotEmpty()) {
-                    val merged = cloudBookmarks.map { cb ->
-                        val fresh = BookmarkEntity(
+                    val freshEntities = cloudBookmarks.map { cb ->
+                        BookmarkEntity(
                             id = cb.id, text = cb.text, createdAt = cb.createdAt, userId = userId,
                             title = cb.title, url = cb.url, summary = cb.summary,
                             tags = if (cb.tags.isEmpty()) null else cb.tags.joinToString(","),
@@ -110,7 +121,11 @@ class BookmarkRepositoryImpl(
                             referenceCount = cb.referenceCount, entities = cb.entities,
                             isDeepAnalyzed = cb.isDeepAnalyzed, deepSummary = cb.deepSummary
                         )
-                        val existing = dao.getBookmarkById(fresh.id)
+                    }
+                    val freshIds = freshEntities.map { it.id }
+                    val existingMap = dao.getBookmarksByIds(freshIds).associateBy { it.id }
+                    val merged = freshEntities.map { fresh ->
+                        val existing = existingMap[fresh.id]
                         if (existing != null) {
                             fresh.copy(
                                 summary = fresh.summary ?: existing.summary,
@@ -257,15 +272,17 @@ class BookmarkRepositoryImpl(
                     return@withContext Result.failure(RateLimitException(secondsLeft))
                 } else {
                     lastError = e
+                    xSyncError = e
                 }
             } catch (e: Exception) {
                 Log.e("BookmarkRepo", "X API sync error: ${e.message}")
                 lastError = e
+                xSyncError = e
             }
 
             // 3. Firebase push (bounded for the same reason as the pull)
             try {
-                val local = dao.getAllBookmarksDirect().filter { it.userId == userId }
+                val local = dao.getBookmarksByUserDirect(userId)
                 if (local.isNotEmpty()) withTimeoutOrNull(FIREBASE_TIMEOUT_MS) {
                     firebaseSyncManager.pushBookmarks(userId, local.map { it.toDomain() })
                 }
@@ -273,8 +290,13 @@ class BookmarkRepositoryImpl(
                 Log.e("BookmarkRepo", "Firebase push error: ${e.message}")
             }
 
-            if (firebaseSyncSuccess || xSyncSuccess) Result.success(Unit)
-            else Result.failure(lastError ?: Exception("Sync failed"))
+            when {
+                xSyncSuccess -> Result.success(Unit)
+                // X is authoritative: if it failed, surface that even if the cloud mirror "succeeded".
+                xSyncError != null -> Result.failure(xSyncError)
+                firebaseSyncSuccess -> Result.success(Unit)
+                else -> Result.failure(lastError ?: Exception("Sync failed"))
+            }
         }
 
     override suspend fun clearAll(userId: String) = withContext(Dispatchers.IO) {
@@ -310,7 +332,9 @@ class BookmarkRepositoryImpl(
                 )
                 dao.insertBookmarks(listOf(entity))
                 val domain = entity.toDomain()
-                try { firebaseSyncManager.pushBookmark(userId, domain) } catch (e: Exception) { /* no-op */ }
+                // Mirror to cloud fire-and-forget: the local insert already succeeded, and a blocking
+                // inline push would hang the add whenever Firestore is slow/unreachable (offline).
+                mirrorToCloud(entity.id)
                 Result.success(domain)
             } catch (e: Exception) {
                 Log.e("BookmarkRepo", "Failed to add bookmark", e)
@@ -321,9 +345,13 @@ class BookmarkRepositoryImpl(
     override suspend fun deleteBookmarks(ids: List<String>) = withContext(Dispatchers.IO) {
         val entities = ids.mapNotNull { dao.getBookmarkById(it) }
         dao.deleteBookmarks(ids)
-        try {
-            entities.forEach { firebaseSyncManager.deleteBookmarks(it.userId, listOf(it.id)) }
-        } catch (e: Exception) { Log.e("BookmarkRepo", "Firebase delete error: ${e.message}") }
+        // Fire-and-forget cloud delete for the same reason as addBookmark: never block the local
+        // delete on a slow/unreachable Firestore.
+        mirrorScope.launch {
+            try {
+                entities.forEach { firebaseSyncManager.deleteBookmarks(it.userId, listOf(it.id)) }
+            } catch (e: Exception) { Log.e("BookmarkRepo", "Firebase delete error: ${e.message}") }
+        }
         Unit
     }
 
@@ -390,8 +418,8 @@ class BookmarkRepositoryImpl(
             }
         }
 
-    override suspend fun getUnembeddedAnalyzed(): List<Bookmark> =
-        withContext(Dispatchers.IO) { dao.getUnembedded().map { it.toDomain() } }
+    override suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark> =
+        withContext(Dispatchers.IO) { dao.getUnembedded(userId).map { it.toDomain() } }
 
     override suspend fun clearAllEmbeddings() =
         withContext(Dispatchers.IO) { dao.clearAllEmbeddings() }
@@ -500,8 +528,8 @@ class BookmarkRepositoryImpl(
         val rules = space.rules()
         if (!rules.isActive) return@withContext 0
         // Explicit action: file any unfiled bookmark this Space's rules match, ignoring autoFile.
-        val matches = dao.getAllBookmarksDirect()
-            .filter { it.userId == space.userId && it.spaceId == null && rules.matches(it.toDomain()) }
+        val matches = dao.getBookmarksByUserDirect(space.userId)
+            .filter { it.spaceId == null && rules.matches(it.toDomain()) }
             .map { it.id }
         if (matches.isNotEmpty()) dao.updateSpaceForIds(matches, spaceId)
         matches.size
@@ -511,8 +539,8 @@ class BookmarkRepositoryImpl(
         val smartSpaces = spaceDao.getSpacesDirect(userId).filter { it.rules().autoFile && it.rules().isActive }
         if (smartSpaces.isEmpty()) return@withContext 0
         var filed = 0
-        dao.getAllBookmarksDirect()
-            .filter { it.userId == userId && it.spaceId == null }
+        dao.getBookmarksByUserDirect(userId)
+            .filter { it.spaceId == null }
             .forEach { entity ->
                 val domain = entity.toDomain()
                 // First matching Space wins, matching the single-bookmark fileByRules() ordering.
@@ -543,8 +571,8 @@ class BookmarkRepositoryImpl(
         }
 
     override suspend fun backfillCategorySpaces(userId: String) = withContext(Dispatchers.IO) {
-        val unfiledByCategory = dao.getAllBookmarksDirect()
-            .filter { it.userId == userId && it.spaceId == null && !it.category.isNullOrBlank() }
+        val unfiledByCategory = dao.getBookmarksByUserDirect(userId)
+            .filter { it.spaceId == null && !it.category.isNullOrBlank() }
             .groupBy { it.category!!.trim().lowercase() }
         unfiledByCategory.forEach { (category, items) ->
             val spaceId = ensureCategorySpace(userId, category) ?: return@forEach
@@ -580,7 +608,7 @@ class BookmarkRepositoryImpl(
                 when {
                     e.code() == 401 -> {
                         // Refresh the access token once, then retry on the new token.
-                        token = refreshAccessToken() ?: throw e
+                        token = refreshAccessTokenSafely(token) ?: throw e
                     }
                     e.code() == 429 && attempt < MAX_RATE_LIMIT_RETRIES -> {
                         val resetWaitMs = rateLimitWaitMs(e)
@@ -612,6 +640,17 @@ class BookmarkRepositoryImpl(
      * credentials. Returns the new access token, or null if no refresh token is available
      * or the refresh fails (e.g. the refresh token itself expired — user must re-login).
      */
+    /**
+     * Refreshes under [refreshMutex] and collapses a thundering herd: if another coroutine
+     * already rotated the token while this one waited for the lock, the freshly-stored token is
+     * returned instead of consuming the (now-invalid) refresh token a second time.
+     */
+    private suspend fun refreshAccessTokenSafely(staleToken: String): String? = refreshMutex.withLock {
+        val current = tokenStore.getAccessToken()
+        if (!current.isNullOrBlank() && current != staleToken) return@withLock current
+        refreshAccessToken()
+    }
+
     private suspend fun refreshAccessToken(): String? {
         val refresh = tokenStore.getRefreshToken()?.takeIf { it.isNotBlank() } ?: return null
         return try {

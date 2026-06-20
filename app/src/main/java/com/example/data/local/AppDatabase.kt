@@ -8,7 +8,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.BuildConfig
 
-@Database(entities = [BookmarkEntity::class, SpaceEntity::class], version = 9, exportSchema = false)
+@Database(entities = [BookmarkEntity::class, SpaceEntity::class], version = 11, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun spaceDao(): SpaceDao
@@ -61,6 +61,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v9 → v10: adds indices for Space-membership and category filtering. Index names match
+         * Room's generated convention (`index_<table>_<cols>`) so the post-migration schema hash
+         * validates. No data change — pure index creation.
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_spaceId ON bookmarks (spaceId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_userId_category ON bookmarks (userId, category)")
+            }
+        }
+
+        /**
+         * v10 → v11: adds indices for embedding backfill and enrichment queries. Index names match
+         * Room's generated convention (`index_<table>_<cols>`) so the post-migration schema hash
+         * validates. No data change — pure index creation.
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_isAnalyzed ON bookmarks (isAnalyzed)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bookmarks_userId_isAnalyzed ON bookmarks (userId, isAnalyzed)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -68,7 +92,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "curio_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .apply {
                         // Destructive fallback wipes the user's entire library on any schema
                         // mismatch. Keep it for fast iteration in debug builds only; a release

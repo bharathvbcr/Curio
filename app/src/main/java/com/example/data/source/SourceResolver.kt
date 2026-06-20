@@ -2,6 +2,7 @@ package com.example.data.source
 
 import android.util.Log
 import com.example.data.remote.ArxivClient
+import com.example.data.remote.CrossrefClient
 import com.example.data.remote.GithubApi
 import com.example.data.remote.HuggingFaceApi
 import com.example.domain.model.SourceType
@@ -20,13 +21,36 @@ data class SourceInfo(
 class SourceResolver(
     private val arxivClient: ArxivClient,
     private val githubApi: GithubApi,
-    private val huggingFaceApi: HuggingFaceApi
+    private val huggingFaceApi: HuggingFaceApi,
+    private val crossrefClient: CrossrefClient
 ) {
+
+    private suspend fun <T> withRetry(maxAttempts: Int = 3, block: suspend () -> T?): T? {
+        var lastException: Exception? = null
+        repeat(maxAttempts) { attempt ->
+            try {
+                return block()
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() == 429 || e.code() == 503) {
+                    lastException = e
+                    val retryAfter = e.response()?.headers()?.get("Retry-After")?.toLongOrNull()
+                        ?: (1L shl attempt) // exponential backoff: 1s, 2s, 4s
+                    kotlinx.coroutines.delay(retryAfter * 1000)
+                } else {
+                    throw e
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastException = e
+            }
+        }
+        return null
+    }
 
     suspend fun resolve(text: String, url: String?): SourceInfo? = withContext(Dispatchers.IO) {
         val allUrls = extractAllUrls(text) + listOfNotNull(url)
 
-        // Priority: arXiv > HuggingFace papers page > GitHub > HuggingFace model/dataset
+        // Priority: arXiv > HuggingFace papers page > GitHub > HuggingFace model/dataset > DOI
         for (u in allUrls) {
             resolveArxiv(u)?.let { return@withContext it }
         }
@@ -43,7 +67,43 @@ class SourceResolver(
         ArxivClient.ARXIV_BARE_REGEX.find(text)?.groupValues?.get(1)?.let { bareId ->
             resolveArxiv("https://arxiv.org/abs/$bareId")
         }?.let { return@withContext it }
+        // Fallback: a DOI in a doi.org URL or bare "10.xxxx/..." token anywhere in the text.
+        for (u in allUrls) {
+            CrossrefClient.DOI_REGEX.find(u)?.groupValues?.get(1)?.let { doi ->
+                resolveDoi(doi)?.let { return@withContext it }
+            }
+        }
+        CrossrefClient.DOI_REGEX.find(text)?.groupValues?.get(1)?.let { doi ->
+            resolveDoi(doi)
+        }?.let { return@withContext it }
         null
+    }
+
+    // ── DOI (Crossref) ──────────────────────────────────────────────────────────
+
+    private suspend fun resolveDoi(doi: String): SourceInfo? {
+        return try {
+            val meta = crossrefClient.fetchWork(doi) ?: return null
+            // arXiv DOIs (10.48550/arXiv.*) are better served by the arXiv resolver; skip them here.
+            if (meta.doi.contains("arxiv", ignoreCase = true)) return null
+            val extra = buildExtraJson(mapOf(
+                "doi" to meta.doi,
+                "published" to meta.published,
+                "container" to meta.containerTitle,
+                "type" to meta.type
+            ))
+            SourceInfo(
+                sourceType = SourceType.DOI,
+                sourceId = meta.doi,
+                sourceTitle = meta.title,
+                sourceAuthors = meta.authors.joinToString(", ").ifBlank { null },
+                sourceAbstract = meta.abstract,
+                sourceExtra = extra
+            )
+        } catch (e: Exception) {
+            Log.e("SourceResolver", "DOI resolve failed for $doi: ${e.message}")
+            null
+        }
     }
 
     private fun extractAllUrls(text: String): List<String> {

@@ -1,16 +1,32 @@
 package com.example
 
 import android.app.Application
+import androidx.appfunctions.service.AppFunctionConfiguration
+import com.example.appfunctions.CurioFunctions
 import com.example.di.AppContainer
 import com.example.di.appModule
 import org.koin.android.ext.koin.androidContext
+import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
 import org.koin.core.context.startKoin
 
-class CurioApplication : Application() {
+class CurioApplication : Application(), AppFunctionConfiguration.Provider {
 
     lateinit var appContainer: AppContainer
         private set
+
+    private val curioFunctions: CurioFunctions by lazy {
+        CurioFunctions(
+            bookmarkRepository = appContainer.bookmarkRepository,
+            database = appContainer.database,
+            tokenStore = appContainer.tokenStore,
+        )
+    }
+
+    override val appFunctionConfiguration: AppFunctionConfiguration
+        get() = AppFunctionConfiguration.Builder()
+            .addEnclosingClassFactory(CurioFunctions::class.java) { curioFunctions }
+            .build()
 
     override fun onCreate() {
         super.onCreate()
@@ -30,5 +46,13 @@ class CurioApplication : Application() {
         // never take down app startup.
         runCatching { com.example.background.EmbeddingIndexScheduler.ensureScheduled(this) }
             .onFailure { android.util.Log.w("CurioApplication", "Embedding index scheduling skipped: ${it.message}") }
+
+        // Load any user-supplied xAI key (encrypted on disk) into the process-wide resolver, so the
+        // app uses the user's own key instead of a build-time key baked into the APK.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                com.example.data.XaiKeyStore.setRuntimeKey(appContainer.tokenStore.getXaiKey())
+            }.onFailure { android.util.Log.w("CurioApplication", "xAI key load skipped: ${it.message}") }
+        }
     }
 }

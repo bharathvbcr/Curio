@@ -168,7 +168,9 @@ fun ReaderViewScreen(
 ) {
     var fontScale by remember { mutableStateOf(1.0f) } // 1.0 = Medium, 0.85 = Small, 1.25 = Large
     val context = LocalContext.current
-    val formattedTime = SimpleDateFormat("MMM dd, yyyy - HH:mm", Locale.getDefault()).format(java.util.Date(bookmark.createdAt))
+    val formattedTime = remember(bookmark.createdAt) {
+        SimpleDateFormat("MMM dd, yyyy - HH:mm", Locale.getDefault()).format(java.util.Date(bookmark.createdAt))
+    }
 
     androidx.compose.ui.window.Dialog(
         properties = androidx.compose.ui.window.DialogProperties(

@@ -32,9 +32,9 @@ class GrokImageService(
         highQuality: Boolean = false,
         aspectRatio: String = "16:9"
     ): GeneratedImage? = withContext(Dispatchers.IO) {
-        val apiKey = com.example.BuildConfig.XAI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
-            Log.w("GrokImageService", "XAI_API_KEY missing — skipping image generation")
+        val apiKey = XaiKeyStore.resolve()
+        if (!XaiKeyStore.isConfigured()) {
+            Log.w("GrokImageService", "xAI key missing — skipping image generation")
             return@withContext null
         }
         try {

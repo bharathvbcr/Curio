@@ -22,13 +22,6 @@ data class AuthChallenge(
     val state: String
 )
 
-/**
- * Typed application error representation mapping directly to visual presentation systems.
- */
-sealed interface AppError {
-    data class Network(val message: String) : AppError
-    data class RateLimited(val retryAfterSeconds: Int) : AppError
-    data class Auth(val message: String) : AppError
-    data class GenAiUnavailable(val reason: String) : AppError
-    data class Unknown(val throwable: Throwable) : AppError
-}
+// Note: typed error handling lives in the layers that surface it — [com.example.data.repo.RateLimitException]
+// and the sealed UI states (SyncUiState/AnalysisUiState/DigestUiState). A separate unused AppError
+// hierarchy was removed to avoid dead, drifting code.

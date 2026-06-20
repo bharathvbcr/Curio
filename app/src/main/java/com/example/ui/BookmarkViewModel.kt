@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.os.CountDownTimer
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AnalysisConfig
 import com.example.data.DeepAnalysisResult
@@ -19,8 +18,10 @@ import com.example.data.repo.RateLimitException
 import com.example.data.source.SourceResolver
 import com.example.domain.model.Bookmark
 import com.example.domain.model.Space
+import com.example.domain.model.SourceType
 import com.example.domain.model.SpaceRules
 import com.example.domain.repo.BookmarkRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,8 +29,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class AppThemeSetting { SYSTEM, LIGHT, DARK }
 enum class SearchMode { KEYWORD, SEMANTIC }
@@ -79,7 +82,8 @@ class BookmarkViewModel(
     private val sourceResolver: SourceResolver,
     private val textGenerator: com.example.data.ai.TextGeneratorSelector,
     private val grokImageService: com.example.data.GrokImageService,
-    private val embeddingModelManager: com.example.data.embedding.EmbeddingModelManager
+    private val embeddingModelManager: com.example.data.embedding.EmbeddingModelManager,
+    private val tokenStore: com.example.data.remote.TokenStore
 ) : ViewModel() {
 
     /** Download state of the on-device EmbeddingGemma model (for the Settings card). */
@@ -108,34 +112,28 @@ class BookmarkViewModel(
     private val _userId = MutableStateFlow<String?>(null)
     val userId: StateFlow<String?> = _userId.asStateFlow()
 
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    private val _searchMode = MutableStateFlow(SearchMode.KEYWORD)
-    val searchMode: StateFlow<SearchMode> = _searchMode.asStateFlow()
-
-    private val _semanticResults = MutableStateFlow<List<Bookmark>>(emptyList())
-    val semanticResults: StateFlow<List<Bookmark>> = _semanticResults.asStateFlow()
-
-    private val _isSemanticLoading = MutableStateFlow(false)
-    val isSemanticLoading: StateFlow<Boolean> = _isSemanticLoading.asStateFlow()
-
-    private val _selectedCategory = MutableStateFlow<String?>(null)
-    val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
-
-    private val _selectedTag = MutableStateFlow<String?>(null)
-    val selectedTag: StateFlow<String?> = _selectedTag.asStateFlow()
-
-    private val _quickFilter = MutableStateFlow(QuickFilter.ALL)
-    val quickFilter: StateFlow<QuickFilter> = _quickFilter.asStateFlow()
-    fun setQuickFilter(filter: QuickFilter) {
-        _quickFilter.value = if (_quickFilter.value == filter) QuickFilter.ALL else filter
-    }
-
+    // Search/filter input state lives in SearchController to shrink this god class; the VM facades
+    // its flows + setters so the UI is unchanged. rawBookmarks/_userId are read lazily via the
+    // suppliers, so the forward reference to rawBookmarks (declared below) is safe.
+    private val searchController = SearchController(
+        scope = viewModelScope,
+        embeddingService = embeddingService,
+        repository = repository,
+        rawBookmarks = { rawBookmarks.value },
+        currentUserId = { _userId.value }
+    )
+    val searchQuery: StateFlow<String> = searchController.searchQuery
+    val searchMode: StateFlow<SearchMode> = searchController.searchMode
+    val semanticResults: StateFlow<List<Bookmark>> = searchController.semanticResults
+    val isSemanticLoading: StateFlow<Boolean> = searchController.isSemanticLoading
+    val selectedCategory: StateFlow<String?> = searchController.selectedCategory
+    val selectedTag: StateFlow<String?> = searchController.selectedTag
+    val quickFilter: StateFlow<QuickFilter> = searchController.quickFilter
     /** When non-null, the feed is scoped to bookmarks filed in this Space. */
-    private val _selectedSpaceId = MutableStateFlow<String?>(null)
-    val selectedSpaceId: StateFlow<String?> = _selectedSpaceId.asStateFlow()
-    fun selectSpace(spaceId: String?) { _selectedSpaceId.value = spaceId }
+    val selectedSpaceId: StateFlow<String?> = searchController.selectedSpaceId
+
+    fun setQuickFilter(filter: QuickFilter) = searchController.setQuickFilter(filter)
+    fun selectSpace(spaceId: String?) = searchController.selectSpace(spaceId)
 
     private val _themeSetting = MutableStateFlow(AppThemeSetting.SYSTEM)
     val themeSetting: StateFlow<AppThemeSetting> = _themeSetting.asStateFlow()
@@ -155,12 +153,16 @@ class BookmarkViewModel(
         val quickFilter: QuickFilter,
         val spaceId: String?
     )
-    private val _searchContext = combine(_searchMode, _semanticResults, _quickFilter, _selectedSpaceId) { mode, results, quick, space ->
+    private val _searchContext = combine(
+        searchController.searchMode, searchController.semanticResults,
+        searchController.quickFilter, searchController.selectedSpaceId
+    ) { mode, results, quick, space ->
         SearchContext(mode, results, quick, space)
     }
 
     val bookmarks: StateFlow<List<Bookmark>> = combine(
-        rawBookmarks, _searchQuery, _selectedCategory, _selectedTag, _searchContext
+        rawBookmarks, searchController.searchQuery, searchController.selectedCategory,
+        searchController.selectedTag, _searchContext
     ) { list, query, category, tag, ctx ->
         val mode = ctx.mode
         val semanticList = ctx.semanticResults
@@ -201,7 +203,7 @@ class BookmarkViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val stats: StateFlow<CurioStats> = rawBookmarks
-        .flatMapLatest { list ->
+        .map { list ->
             val curated = list.count { it.isAnalyzed }
             val ocr = list.count { !it.ocrText.isNullOrBlank() }
             val withSource = list.count { it.sourceType != null }
@@ -214,35 +216,20 @@ class BookmarkViewModel(
                 item.category?.trim()?.takeIf { it.isNotEmpty() }?.let { counts[it] = (counts[it] ?: 0) + 1 }
                 item.tags.forEach { tag -> tag.lowercase().trim().takeIf { it.isNotEmpty() }?.let { tagsMap[it] = (tagsMap[it] ?: 0) + 1 } }
             }
-            flowOf(CurioStats(
+            CurioStats(
                 totalCount = list.size, curatedCount = curated, ocrCount = ocr,
                 categoryCounts = counts, topTags = tagsMap.toList().sortedByDescending { it.second }.take(8),
                 sourceCount = withSource, deepAnalyzedCount = deepAnalyzed,
                 favoriteCount = favorites, readLaterCount = readLater
-            ))
+            )
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CurioStats())
 
-    fun updateSearchQuery(query: String) {
-        _searchQuery.value = query
-        if (_searchMode.value == SearchMode.SEMANTIC && query.isNotBlank()) {
-            runSemanticSearch(query)
-        }
-    }
-
-    fun setSearchMode(mode: SearchMode) {
-        _searchMode.value = mode
-        if (mode == SearchMode.KEYWORD) _semanticResults.value = emptyList()
-        else if (_searchQuery.value.isNotBlank()) runSemanticSearch(_searchQuery.value)
-    }
-
-    fun selectCategory(category: String?) { _selectedCategory.value = category }
-    fun selectTag(tag: String?) { _selectedTag.value = tag }
-    fun clearAllFilters() {
-        _searchQuery.value = ""; _selectedCategory.value = null; _selectedTag.value = null
-        _semanticResults.value = emptyList(); _searchMode.value = SearchMode.KEYWORD
-        _quickFilter.value = QuickFilter.ALL; _selectedSpaceId.value = null
-    }
+    fun updateSearchQuery(query: String) = searchController.updateQuery(query)
+    fun setSearchMode(mode: SearchMode) = searchController.setMode(mode)
+    fun selectCategory(category: String?) = searchController.selectCategory(category)
+    fun selectTag(tag: String?) = searchController.selectTag(tag)
+    fun clearAllFilters() = searchController.clearAll()
 
     // ── Spaces ───────────────────────────────────────────────────────────────
 
@@ -273,7 +260,7 @@ class BookmarkViewModel(
 
     fun deleteSpace(id: String) {
         viewModelScope.launch {
-            if (_selectedSpaceId.value == id) _selectedSpaceId.value = null
+            searchController.clearSpaceIf(id)
             repository.deleteSpace(id)
         }
     }
@@ -298,10 +285,11 @@ class BookmarkViewModel(
     }
 
     /** Files (or unfiles, when [spaceId] is null) the given bookmarks into a Space. */
-    fun assignBookmarksToSpace(ids: List<String>, spaceId: String?) {
-        if (ids.isEmpty()) return
-        viewModelScope.launch { repository.assignToSpace(ids, spaceId) }
-    }
+    // Per-bookmark mutations (curation toggles, notes, delete, category/space assignment) live in
+    // CurationController to shrink this god class; the VM facades them so the UI is unchanged.
+    private val curationController = CurationController(viewModelScope, repository)
+
+    fun assignBookmarksToSpace(ids: List<String>, spaceId: String?) = curationController.assignToSpace(ids, spaceId)
 
     /**
      * Accepts the AI-category suggestion for an unfiled bookmark: ensures the Space matching its
@@ -334,55 +322,16 @@ class BookmarkViewModel(
 
     // ── Phase 12: Personal curation toggles ─────────────────────────────────
 
-    fun toggleFavorite(bookmark: Bookmark) {
-        viewModelScope.launch { repository.setFavorite(bookmark.id, !bookmark.isFavorite) }
-    }
-
-    fun toggleSavedForLater(bookmark: Bookmark) {
-        viewModelScope.launch { repository.setSavedForLater(bookmark.id, !bookmark.isSavedForLater) }
-    }
-
+    fun toggleFavorite(bookmark: Bookmark) = curationController.toggleFavorite(bookmark)
+    fun toggleSavedForLater(bookmark: Bookmark) = curationController.toggleSavedForLater(bookmark)
     /** Saves (or clears, when blank) the user's personal note on an entry. */
-    fun updateNotes(bookmarkId: String, notes: String?) {
-        viewModelScope.launch { repository.updateNotes(bookmarkId, notes) }
-    }
+    fun updateNotes(bookmarkId: String, notes: String?) = curationController.updateNotes(bookmarkId, notes)
 
-    // ── Weekly AI digest ────────────────────────────────────────────────────
-    private val _digestState = MutableStateFlow<DigestUiState>(DigestUiState.Idle)
-    val digestState: StateFlow<DigestUiState> = _digestState.asStateFlow()
-
-    /**
-     * Generates a themed markdown digest of the last 7 days of saves via Grok. Surfaces an explicit
-     * Empty state when nothing was saved this week so the UI never shows a misleading blank digest.
-     */
-    fun generateWeeklyDigest() {
-        viewModelScope.launch {
-            _digestState.value = DigestUiState.Loading
-            val cutoff = System.currentTimeMillis() - DIGEST_WINDOW_MS
-            val recent = rawBookmarks.value.filter { it.createdAt >= cutoff }
-            if (recent.isEmpty()) {
-                _digestState.value = DigestUiState.Empty("No saves in the last 7 days — come back after you've bookmarked something new.")
-                return@launch
-            }
-            val itemsBlock = recent.take(DIGEST_MAX_ITEMS).joinToString("\n") { b ->
-                val title = b.sourceTitle?.takeIf { it.isNotBlank() }
-                    ?: b.title?.takeIf { it.isNotBlank() }
-                    ?: b.text.take(80).trim()
-                val cat = b.category?.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
-                val summary = b.summary?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""
-                "- $title$cat$summary"
-            }
-            try {
-                val markdown = aiAnalyzer.generateWeeklyDigest(itemsBlock, recent.size)
-                _digestState.value = DigestUiState.Ready(markdown, recent.size)
-            } catch (e: Exception) {
-                Log.w(TAG, "Weekly digest failed", e)
-                _digestState.value = DigestUiState.Error(e.localizedMessage ?: "Digest generation failed")
-            }
-        }
-    }
-
-    fun dismissDigest() { _digestState.value = DigestUiState.Idle }
+    // ── Weekly AI digest (delegated to DigestController) ─────────────────────
+    private val digestController = DigestController(viewModelScope, aiAnalyzer, { rawBookmarks.value })
+    val digestState: StateFlow<DigestUiState> = digestController.digestState
+    fun generateWeeklyDigest() = digestController.generate()
+    fun dismissDigest() = digestController.dismiss()
 
     // ── Resurfacing / spaced review ─────────────────────────────────────────
     private val _rediscoverOffset = MutableStateFlow(0)
@@ -413,11 +362,29 @@ class BookmarkViewModel(
     private val _analysisState = MutableStateFlow<AnalysisUiState>(AnalysisUiState.Idle)
     val analysisState: StateFlow<AnalysisUiState> = _analysisState.asStateFlow()
 
-    private val _forceLocalNano = MutableStateFlow(
-        com.example.BuildConfig.XAI_API_KEY.isEmpty() ||
-        com.example.BuildConfig.XAI_API_KEY == "MY_XAI_API_KEY"
-    )
+    private val _forceLocalNano = MutableStateFlow(!com.example.data.XaiKeyStore.isConfigured())
     val forceLocalNano: StateFlow<Boolean> = _forceLocalNano.asStateFlow()
+
+    /** Re-evaluates whether a cloud key is available (call after the user saves/clears their key). */
+    fun refreshKeyAvailability() { _forceLocalNano.value = !com.example.data.XaiKeyStore.isConfigured() }
+
+    private val _xaiKeyConfigured = MutableStateFlow(com.example.data.XaiKeyStore.isConfigured())
+    /** Whether a usable xAI key is configured (drives the Settings key card). */
+    val xaiKeyConfigured: StateFlow<Boolean> = _xaiKeyConfigured.asStateFlow()
+
+    /**
+     * Persists a user-supplied xAI API key (encrypted) and activates it immediately. A blank value
+     * clears it (reverting to the build-time key, if any). Lets users run AI features on their own
+     * key instead of one baked into the APK.
+     */
+    fun saveXaiKey(key: String) {
+        viewModelScope.launch {
+            tokenStore.saveXaiKey(key.trim())
+            com.example.data.XaiKeyStore.setRuntimeKey(key.trim())
+            _xaiKeyConfigured.value = com.example.data.XaiKeyStore.isConfigured()
+            refreshKeyAvailability()
+        }
+    }
 
     private var rateLimitTimer: CountDownTimer? = null
 
@@ -644,35 +611,6 @@ class BookmarkViewModel(
 
     // ── Phase 10: Semantic search ───────────────────────────────────────────
 
-    private fun runSemanticSearch(query: String) {
-        val uid = _userId.value ?: return
-        viewModelScope.launch {
-            _isSemanticLoading.value = true
-            try {
-                val queryEmbedding = embeddingService.embedQuery(query) ?: run {
-                    _isSemanticLoading.value = false
-                    return@launch
-                }
-                val allEmbeddings = repository.getBookmarksWithEmbeddings(uid)
-                    .map { (id, bytes) -> id to bytes.toFloatArray() }
-
-                if (allEmbeddings.isEmpty()) {
-                    _isSemanticLoading.value = false
-                    return@launch
-                }
-
-                val topIds = VectorSearch.topK(queryEmbedding, allEmbeddings, k = 20).toSet()
-                val bookmarkMap = rawBookmarks.value.associateBy { it.id }
-                _semanticResults.value = topIds.mapNotNull { bookmarkMap[it] }
-            } catch (e: Exception) {
-                Log.w(TAG, "Semantic search failed for query \"$query\"", e)
-                _isSemanticLoading.value = false
-            } finally {
-                _isSemanticLoading.value = false
-            }
-        }
-    }
-
     private fun generateEmbeddingForBookmark(bookmarkId: String) {
         viewModelScope.launch {
             try {
@@ -710,7 +648,7 @@ class BookmarkViewModel(
         }
     }
 
-    // ── Phase 11: BibTeX export ─────────────────────────────────────────────
+    // ── Citation export (BibTeX / RIS / CSL-JSON / Markdown) ─────────────────
 
     fun exportBibtex(bookmarks: List<Bookmark>): String =
         BibtexExporter.toBibtexList(bookmarks)
@@ -718,15 +656,19 @@ class BookmarkViewModel(
     fun exportSingleBibtex(bookmark: Bookmark): String? =
         BibtexExporter.toBibtex(bookmark)
 
+    fun exportRis(bookmarks: List<Bookmark>): String =
+        BibtexExporter.toRisList(bookmarks)
+
+    fun exportCslJson(bookmarks: List<Bookmark>): String =
+        BibtexExporter.toCslJsonList(bookmarks)
+
+    fun exportMarkdown(bookmarks: List<Bookmark>): String =
+        BibtexExporter.toMarkdownList(bookmarks)
+
     // ── Existing operations ─────────────────────────────────────────────────
 
-    fun deleteBookmarks(ids: List<String>) {
-        viewModelScope.launch { repository.deleteBookmarks(ids) }
-    }
-
-    fun updateCategoryForBookmarks(ids: List<String>, category: String) {
-        viewModelScope.launch { repository.updateCategoryForIds(ids, category) }
-    }
+    fun deleteBookmarks(ids: List<String>) = curationController.delete(ids)
+    fun updateCategoryForBookmarks(ids: List<String>, category: String) = curationController.updateCategory(ids, category)
 
     fun clearAllData() {
         val uid = _userId.value ?: return
@@ -768,119 +710,25 @@ class BookmarkViewModel(
         }
     }
 
-    // ── Chat with RAG + Live Search grounding ───────────────────────────────
+    // ── Chat with RAG + Live Search grounding (delegated to ChatController) ──────
+    // Chat state was extracted into ChatController to shrink this god class. The VM keeps the same
+    // public API (facade) so the chat UI is unchanged; the controller reads live library/user state
+    // through the suppliers below.
+    private val chatController = ChatController(
+        scope = viewModelScope,
+        aiAnalyzer = aiAnalyzer,
+        embeddingService = embeddingService,
+        repository = repository,
+        rawBookmarks = { rawBookmarks.value },
+        currentUserId = { _userId.value }
+    )
+    val chatMessages: StateFlow<List<ChatMessage>> = chatController.chatMessages
+    val isChatLoading: StateFlow<Boolean> = chatController.isChatLoading
+    val chatSources: StateFlow<Set<ChatSource>> = chatController.chatSources
 
-    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
-
-    private val _isChatLoading = MutableStateFlow(false)
-    val isChatLoading: StateFlow<Boolean> = _isChatLoading.asStateFlow()
-
-    /** Grounding sources the user has toggled on. [ChatSource.LIBRARY] is on by default. */
-    private val _chatSources = MutableStateFlow(setOf(ChatSource.LIBRARY))
-    val chatSources: StateFlow<Set<ChatSource>> = _chatSources.asStateFlow()
-
-    fun toggleChatSource(source: ChatSource) {
-        _chatSources.value = _chatSources.value.toMutableSet().apply {
-            if (!add(source)) remove(source)
-        }.ifEmpty { setOf(ChatSource.LIBRARY) }
-    }
-
-    /** Resets the conversation back to the empty welcome state. */
-    fun clearChat() {
-        _chatMessages.value = emptyList()
-        _isChatLoading.value = false
-    }
-
-    fun sendChatMessage(textInput: String) {
-        if (textInput.isBlank()) return
-        val sources = _chatSources.value
-        val userMsg = ChatMessage(id = java.util.UUID.randomUUID().toString(), sender = ChatSender.USER, text = textInput)
-        _chatMessages.value = _chatMessages.value + userMsg
-        _isChatLoading.value = true
-        viewModelScope.launch {
-            try {
-                val uid = _userId.value
-                val useLibrary = ChatSource.LIBRARY in sources
-                val contextItems = if (useLibrary) {
-                    if (uid != null) retrieveRagContext(textInput, uid) else rawBookmarks.value.take(15)
-                } else emptyList()
-
-                val contextPrompt = buildString {
-                    if (contextItems.isNotEmpty()) {
-                        appendLine("Research library context (semantically retrieved):")
-                        contextItems.forEach { b ->
-                            val sourceInfo = if (b.sourceType != null) "[${b.sourceType?.name}:${b.sourceId}] " else ""
-                            appendLine("- ${sourceInfo}${b.sourceTitle ?: b.title ?: "Untitled"}")
-                            if (!b.sourceAuthors.isNullOrBlank()) appendLine("  Authors: ${b.sourceAuthors}")
-                            appendLine("  Category: ${b.category ?: "?"} | Tags: ${b.tags.take(4).joinToString(",")}")
-                            if (!b.summary.isNullOrBlank()) appendLine("  Summary: ${b.summary}")
-                            if (!b.deepSummary.isNullOrBlank()) appendLine("  Deep: ${b.deepSummary?.take(200)}")
-                        }
-                    } else if (useLibrary) {
-                        appendLine("Library is empty.")
-                    }
-                    appendLine("\nUser query: \"$textInput\"")
-                }
-
-                // Live Search sources beyond the local library (web / x / news).
-                val liveSources = sources.mapNotNull { src ->
-                    when (src) {
-                        ChatSource.WEB -> com.example.data.remote.XAiSearchSource.web()
-                        ChatSource.X -> com.example.data.remote.XAiSearchSource.x()
-                        ChatSource.NEWS -> com.example.data.remote.XAiSearchSource.news()
-                        ChatSource.LIBRARY -> null
-                    }
-                }
-                val searchParams = if (liveSources.isNotEmpty()) {
-                    com.example.data.remote.XAiSearchParameters(
-                        mode = com.example.data.remote.GrokSearchMode.ON,
-                        returnCitations = true,
-                        maxSearchResults = 12,
-                        sources = liveSources
-                    )
-                } else null
-
-                val liveLabels = sources.filter { it != ChatSource.LIBRARY }.joinToString("/") { it.label }
-                val sysInst = buildString {
-                    appendLine("You are Curio Research Assistant — a personal AI for an ML researcher's saved papers and repos.")
-                    if (useLibrary) appendLine("Prefer the retrieved library context. Cite paper titles and arXiv IDs when relevant.")
-                    if (searchParams != null) appendLine("You also have live $liveLabels search — use it to ground claims and cite sources with markdown links.")
-                    appendLine("Use markdown (headings, bold, bullets, links). Keep answers concise and formatted for mobile screens.")
-                }.trimIndent()
-
-                val aiResponse = aiAnalyzer.generateChatResponse(contextPrompt, sysInst, searchParams)
-                _chatMessages.value = _chatMessages.value + ChatMessage(
-                    id = java.util.UUID.randomUUID().toString(),
-                    sender = ChatSender.AI,
-                    text = aiResponse.text,
-                    citations = aiResponse.citations,
-                    groundedIn = sources.toList()
-                )
-            } catch (e: Exception) {
-                _chatMessages.value = _chatMessages.value + ChatMessage(
-                    id = java.util.UUID.randomUUID().toString(), sender = ChatSender.AI,
-                    text = "Failed to respond: ${e.localizedMessage}"
-                )
-            } finally {
-                _isChatLoading.value = false
-            }
-        }
-    }
-
-    private suspend fun retrieveRagContext(query: String, userId: String): List<Bookmark> {
-        return try {
-            val queryEmbedding = embeddingService.embedQuery(query) ?: return rawBookmarks.value.take(15)
-            val allEmbeddings = repository.getBookmarksWithEmbeddings(userId)
-                .map { (id, bytes) -> id to bytes.toFloatArray() }
-            if (allEmbeddings.isEmpty()) return rawBookmarks.value.take(15)
-            val topIds = VectorSearch.topK(queryEmbedding, allEmbeddings, k = 15).toSet()
-            val bookmarkMap = rawBookmarks.value.associateBy { it.id }
-            topIds.mapNotNull { bookmarkMap[it] }
-        } catch (e: Exception) {
-            rawBookmarks.value.take(15)
-        }
-    }
+    fun toggleChatSource(source: ChatSource) = chatController.toggleSource(source)
+    fun clearChat() = chatController.clear()
+    fun sendChatMessage(textInput: String) = chatController.send(textInput)
 
     fun addManualBookmark(text: String, onResult: (Result<Bookmark>) -> Unit = {}) {
         val uid = _userId.value ?: return
@@ -927,25 +775,8 @@ class BookmarkViewModel(
 
     companion object {
         private const val TAG = "BookmarkViewModel"
-        private const val DIGEST_WINDOW_MS = 7L * 24 * 60 * 60 * 1000 // last 7 days
-        private const val DIGEST_MAX_ITEMS = 40                       // cap tokens/cost per digest
         private const val REDISCOVER_MIN_AGE_MS = 14L * 24 * 60 * 60 * 1000 // only resurface 2-week-old saves
         private const val REDISCOVER_BATCH = 3                              // picks shown at once
-    }
-
-    class Factory(
-        private val repository: BookmarkRepository,
-        private val ocrAnalyzer: OcrAnalyzer,
-        private val aiAnalyzer: XAiAnalyzer,
-        private val embeddingService: com.example.data.embedding.EmbeddingProvider,
-        private val sourceResolver: SourceResolver,
-        private val textGenerator: com.example.data.ai.TextGeneratorSelector,
-        private val grokImageService: com.example.data.GrokImageService,
-        private val embeddingModelManager: com.example.data.embedding.EmbeddingModelManager
-    ) : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager) as T
     }
 }
 

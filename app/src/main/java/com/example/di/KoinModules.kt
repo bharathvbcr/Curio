@@ -30,6 +30,7 @@ fun appModule(container: AppContainer) = module {
     single { container.embeddingModelManager }
     single { container.sourceResolver }
     single { container.textGenerator }
+    single { container.tokenStore }
 
     viewModel {
         BookmarkViewModel(
@@ -40,7 +41,8 @@ fun appModule(container: AppContainer) = module {
             get<SourceResolver>(),
             get<TextGeneratorSelector>(),
             get<com.example.data.GrokImageService>(),
-            get<com.example.data.embedding.EmbeddingModelManager>()
+            get<com.example.data.embedding.EmbeddingModelManager>(),
+            get<com.example.data.remote.TokenStore>()
         )
     }
     viewModel { AuthViewModel(get<LoginUseCase>(), get<AuthRepository>()) }

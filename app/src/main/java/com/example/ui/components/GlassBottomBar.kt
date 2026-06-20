@@ -20,6 +20,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.AnimatedVisibility
@@ -89,7 +93,10 @@ fun GlassBottomBar(
                         .weight(1f)
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(50))
-                        .pressBounce(pressedScale = 0.88f) { onNavigate(item.route) },
+                        // Expose tab role + selected state so screen readers announce
+                        // "<label>, tab, selected" rather than a bare button.
+                        .semantics { this.role = Role.Tab; selected = isSelected }
+                        .pressBounce(pressedScale = 0.88f, role = null) { onNavigate(item.route) },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(

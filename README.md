@@ -49,7 +49,7 @@ library. It reads your screenshots with **on-device OCR**, classifies and summar
 Curio follows **Clean Architecture** with strict unidirectional data flow:
 
 ```
-com.example.bookmarks
+com.example
 ├── data/      # Retrofit (OAuth 2.0 PKCE) · Room database · repository implementations
 ├── domain/    # Pure-Kotlin models, repository interfaces, and use cases (no Android deps)
 └── ui/        # Jetpack Compose — theme, reusable components, and screen-level state holders
@@ -91,3 +91,20 @@ containing `sdk.dir`). minSdk per the app module.
 
 > The release build references a signing config; for a plain debug run that line can be removed
 > from `app/build.gradle.kts` if your environment has no release keystore configured.
+
+## Secrets & security
+
+`.env`, `local.properties`, and keystores are gitignored and must never be committed. To make
+that mechanical, enable the bundled secret-commit guard once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It blocks staging `.env`/`*.jks`/`*.keystore`/`local.properties` (even with `git add -f`) and
+rejects content matching live xAI/X credential patterns.
+
+> **Note on the xAI key:** the Secrets Gradle plugin compiles `XAI_API_KEY` into `BuildConfig`,
+> so a key in `.env` is embedded in the built APK. Do **not** ship a shared developer key in a
+> public release — front the Grok calls with a backend proxy, or require each user to supply their
+> own key at runtime. Treat any key that has been in a distributed build as compromised and rotate it.

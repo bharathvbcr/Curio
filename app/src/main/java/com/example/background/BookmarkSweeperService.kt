@@ -20,15 +20,38 @@ class BookmarkSweeperService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var isRunning = false
 
+    companion object {
+        // A 30s all-rows network sweep was a demo artifact that drained battery/data. Run it
+        // sparingly; stale-link cleanup is not time-critical.
+        private const val SWEEP_INTERVAL_MS = 6L * 60 * 60 * 1000   // 6 hours
+        // Bound work per cycle and pace requests so a large library can't fire a burst of HEADs.
+        private const val MAX_CHECKS_PER_CYCLE = 50
+        private const val INTER_REQUEST_DELAY_MS = 250L
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val channelId = "curio_sweeper"
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                channelId, "Research Index Sync", android.app.NotificationManager.IMPORTANCE_LOW
+            )
+            (getSystemService(android.app.NotificationManager::class.java))?.createNotificationChannel(channel)
+        }
+        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Curio: Syncing bookmarks")
+            .setSmallIcon(android.R.drawable.ic_popup_sync)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+            .build()
+        startForeground(1001, notification)
+
         if (!isRunning) {
             isRunning = true
             Log.d("BookmarkSweeper", "Sweeper Service started")
             startSweeperLoop()
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startSweeperLoop() {
@@ -45,27 +68,26 @@ class BookmarkSweeperService : Service() {
                 try {
                     Log.d("BookmarkSweeper", "Background bookmarks sweeping and link validation cycle started...")
                     
-                    val allEntities = db.bookmarkDao().getAllBookmarksDirect()
+                    // Bound the work: only rows with a URL, capped per cycle, paced between requests.
+                    val toCheck = db.bookmarkDao().getAllBookmarksDirect()
+                        .filter { !it.url.isNullOrBlank() }
+                        .take(MAX_CHECKS_PER_CYCLE)
 
-                    for (entity in allEntities) {
-                        val url = entity.url
-                        
-                        // 1. Detect and clean up stale, broken links (e.g. 404, 410)
-                        if (!url.isNullOrBlank()) {
-                            val isBroken = checkUrlIsBroken(okHttpClient, url)
-                            if (isBroken) {
-                                Log.w("BookmarkSweeper", "Broken bookmark link detected: $url. Cleaning up automatically.")
-                                db.bookmarkDao().deleteBookmarks(listOf(entity.id))
-                                
-                                // Sync deletion downstream to Firebase
-                                try {
-                                    appContainer.firebaseSyncManager.deleteBookmarks(entity.userId, listOf(entity.id))
-                                } catch (e: Exception) {
-                                    Log.e("BookmarkSweeper", "Failed to sync link deletion to Firestore: ${e.message}")
-                                }
-                                continue
+                    for (entity in toCheck) {
+                        val url = entity.url ?: continue
+                        // Only delete on a DEFINITIVE dead link (404/410). A connection failure is
+                        // usually transient (device offline / DNS hiccup) and must NOT delete the
+                        // user's bookmark — doing so was silent data loss whenever the device was offline.
+                        if (checkUrlIsBroken(okHttpClient, url)) {
+                            Log.w("BookmarkSweeper", "Dead bookmark link (404/410): $url. Removing.")
+                            db.bookmarkDao().deleteBookmarks(listOf(entity.id))
+                            try {
+                                appContainer.firebaseSyncManager.deleteBookmarks(entity.userId, listOf(entity.id))
+                            } catch (e: Exception) {
+                                Log.e("BookmarkSweeper", "Failed to sync link deletion to Firestore: ${e.message}")
                             }
                         }
+                        delay(INTER_REQUEST_DELAY_MS)
 
                         // NOTE: AI enrichment (summarize / classify / tag) is intentionally NOT
                         // run here. It calls the xAI Grok cloud API, so per Curio's privacy model
@@ -79,8 +101,7 @@ class BookmarkSweeperService : Service() {
                     Log.e("BookmarkSweeper", "Error during background diagnostic cycle: ${e.message}", e)
                 }
 
-                // Sweeper interval: checks every 30 seconds for immediate responsiveness in demonstration
-                delay(30_000)
+                delay(SWEEP_INTERVAL_MS)
             }
         }
     }
@@ -98,9 +119,9 @@ class BookmarkSweeperService : Service() {
                     code == 404 || code == 410
                 }
             } catch (e: Exception) {
-                // If the URL has connection refused or host not found, it is also broken/stale
-                val msg = e.message ?: ""
-                msg.contains("Unable to resolve host") || msg.contains("Connection refused") || msg.contains("Route to host")
+                // Connection refused / unresolved host / offline are TRANSIENT — treat the link as
+                // intact (false) so a temporary network blip never deletes the user's bookmark.
+                false
             }
         }
     }

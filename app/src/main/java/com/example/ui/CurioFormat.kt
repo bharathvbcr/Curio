@@ -188,7 +188,7 @@ internal fun displayAuthor(b: Bookmark): String =
 
 /** The single-letter avatar initial for a tweet author, or null for non-tweet sources. */
 internal fun authorInitial(b: Bookmark): Char? {
-    if (b.sourceType == SourceType.ARXIV || b.sourceType == SourceType.GITHUB || b.sourceType == SourceType.HUGGING_FACE) return null
+    if (b.sourceType != null && b.sourceType != SourceType.TWEET) return null
     return b.authorName?.trim()?.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()
 }
 
@@ -197,6 +197,7 @@ internal fun sourceDisplayName(b: Bookmark): String = when (b.sourceType) {
     SourceType.ARXIV -> "arXiv"
     SourceType.GITHUB -> "GitHub"
     SourceType.HUGGING_FACE -> "Hugging Face"
+    SourceType.DOI -> "DOI"
     else -> {
         val host = b.url?.let {
             runCatching { java.net.URI(it).host?.removePrefix("www.") }.getOrNull()

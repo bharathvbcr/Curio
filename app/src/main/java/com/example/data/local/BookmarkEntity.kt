@@ -6,7 +6,16 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "bookmarks",
-    indices = [Index(value = ["userId", "createdAt"]), Index(value = ["userId", "sourceId"])]
+    indices = [
+        Index(value = ["userId", "createdAt"]),
+        Index(value = ["userId", "sourceId"]),
+        // Speeds up Space membership clears (clearSpace) and category filtering (byCategory).
+        Index(value = ["spaceId"]),
+        Index(value = ["userId", "category"]),
+        // Speeds up embedding backfill queries (getUnembedded) and enrichment queries (unenriched).
+        Index(value = ["isAnalyzed"]),
+        Index(value = ["userId", "isAnalyzed"])
+    ]
 )
 data class BookmarkEntity(
     @PrimaryKey val id: String,

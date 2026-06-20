@@ -282,7 +282,8 @@ class ExampleRobolectricTest {
         val sourceResolver = SourceResolver(
             ArxivClient(OkHttpClient()),
             FakeGithubApi(),
-            FakeHuggingFaceApi()
+            FakeHuggingFaceApi(),
+            com.example.data.remote.CrossrefClient(OkHttpClient())
         )
 
         val availability = com.example.data.ai.GenAiAvailability(ApplicationProvider.getApplicationContext())
@@ -294,11 +295,12 @@ class ExampleRobolectricTest {
             availability
         )
         val grokImageService = com.example.data.GrokImageService(fakeXAiApi)
+        val tokenStore = com.example.data.remote.TokenStore(ApplicationProvider.getApplicationContext())
         val embeddingModelManager = com.example.data.embedding.EmbeddingModelManager(
             ApplicationProvider.getApplicationContext(),
-            com.example.data.remote.TokenStore(ApplicationProvider.getApplicationContext())
+            tokenStore
         )
-        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager)
+        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager, tokenStore)
 
         val mockBookmarks = listOf(
             Bookmark(

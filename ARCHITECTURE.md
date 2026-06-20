@@ -5,13 +5,13 @@
 ## Directory Structure
 
 ```
-com.example.bookmarks
+com.example
 ├── data/                  # Remote & Local Data Management
 │   ├── remote/            # Retrofit api, OAuth 2.0 PKCE, DTO structures
 │   ├── local/             # Room Database definitions and Migrations
 │   └── repo/              # Repository Concrete Implementations
 ├── domain/                # Pure Kotlin Business Logic (No Android dependency)
-│   ├── model/             # Typed Models (Bookmark, AuthState, AppError)
+│   ├── model/             # Typed Models (Bookmark, AuthState, AuthChallenge)
 │   ├── repo/              # Repository Interfaces (AuthRepository, BookmarkRepository)
 │   └── usecase/           # Action controllers with high-cohesion operators
 └── ui/                    # Presentation Layer (Jetpack Compose)

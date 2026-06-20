@@ -17,6 +17,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 
 /**
  * Curio motion language — iOS-flavoured liquid & bouncy springs.
@@ -55,10 +58,15 @@ object CurioMotion {
 fun Modifier.pressBounce(
     pressedScale: Float = 0.94f,
     enabled: Boolean = true,
+    // Defaults make every bounce-press control announce as a Button to accessibility services and
+    // emit a light haptic tick — both were missing app-wide. Pass role = null to opt out.
+    role: Role? = Role.Button,
+    haptic: Boolean = true,
     onClick: () -> Unit
 ): Modifier = composed {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    val haptics = LocalHapticFeedback.current
     val scale by animateFloatAsState(
         targetValue = if (pressed) pressedScale else 1f,
         animationSpec = CurioMotion.bouncy(),
@@ -70,7 +78,11 @@ fun Modifier.pressBounce(
             interactionSource = interaction,
             indication = null,
             enabled = enabled,
-            onClick = onClick
+            role = role,
+            onClick = {
+                if (haptic) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            }
         )
 }
 

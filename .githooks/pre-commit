@@ -1,0 +1,34 @@
+#!/bin/sh
+# Curio secret-commit guard. Zero dependencies (POSIX sh + git).
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# Blocks the two most likely credential-disclosure paths:
+#   1. Staging a secret-bearing file (.env, *.jks, *.keystore, local.properties).
+#   2. Staged content that matches a live-credential pattern, even in an
+#      otherwise-innocent file.
+
+set -e
+
+fail() {
+  echo "✖ pre-commit blocked: $1" >&2
+  echo "  If this is a false positive, commit with --no-verify (and double-check first)." >&2
+  exit 1
+}
+
+# 1. Never commit secret-bearing files (these are gitignored, but --force bypasses that).
+blocked_files=$(git diff --cached --name-only | grep -Ei '(^|/)\.env$|(^|/)\.env\.local$|\.jks$|\.keystore$|(^|/)local\.properties$' || true)
+if [ -n "$blocked_files" ]; then
+  fail "attempt to commit secret-bearing file(s):
+$blocked_files"
+fi
+
+# 2. Scan staged additions for live-credential patterns.
+added=$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' || true)
+if printf '%s' "$added" | grep -Eq 'xai-[A-Za-z0-9]{20,}'; then
+  fail "staged content looks like a live xAI API key (xai-…)."
+fi
+if printf '%s' "$added" | grep -Eq 'AAAA[A-Za-z0-9%]{30,}'; then
+  fail "staged content looks like an X/Twitter bearer token (AAAA…)."
+fi
+
+exit 0

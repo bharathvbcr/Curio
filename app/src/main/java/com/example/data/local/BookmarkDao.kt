@@ -84,8 +84,13 @@ interface BookmarkDao {
     @Query("UPDATE bookmarks SET createdAt = :createdAt WHERE id = :id")
     suspend fun updateCreatedAt(id: String, createdAt: Long)
 
+    /** Every bookmark on the device, across users — only for the device-wide background sweep. */
     @Query("SELECT * FROM bookmarks")
     suspend fun getAllBookmarksDirect(): List<BookmarkEntity>
+
+    /** One user's bookmarks (filter pushed into SQL instead of loading every row into memory). */
+    @Query("SELECT * FROM bookmarks WHERE userId = :userId ORDER BY createdAt DESC")
+    suspend fun getBookmarksByUserDirect(userId: String): List<BookmarkEntity>
 
     @Query("""
         UPDATE bookmarks SET
@@ -119,8 +124,14 @@ interface BookmarkDao {
     suspend fun getIdsAndEmbeddings(userId: String): List<IdEmbeddingRow>
 
     /** Analyzed bookmarks that still lack an embedding — the charging-time backfill work list. */
-    @Query("SELECT * FROM bookmarks WHERE isAnalyzed = 1 AND embedding IS NULL")
-    suspend fun getUnembedded(): List<BookmarkEntity>
+    @Query("SELECT * FROM bookmarks WHERE isAnalyzed = 1 AND embedding IS NULL AND userId = :userId LIMIT 200")
+    suspend fun getUnembedded(userId: String): List<BookmarkEntity>
+
+    @Query("SELECT * FROM bookmarks WHERE id IN (:ids)")
+    suspend fun getBookmarksByIds(ids: List<String>): List<BookmarkEntity>
+
+    @Query("SELECT * FROM bookmarks WHERE userId = :userId AND (spaceId IS NULL OR spaceId = '')")
+    suspend fun getUnfiledBookmarks(userId: String): List<BookmarkEntity>
 
     /** Drops every stored embedding — used when switching embedding model/dimensions. */
     @Query("UPDATE bookmarks SET embedding = NULL")

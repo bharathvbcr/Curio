@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AppFunctionAppMetadata xmlns:appfn="http://schemas.android.com/apk/androidx.appfunctions"
+    appfn:description="Curio is a personal research index that saves X (Twitter) bookmarks and
+enriches them with AI-generated summaries, tags, research categories, and primary-source metadata
+(arXiv, GitHub, Hugging Face, DOI).
+
+Operational Patterns:
+- Always call searchBookmarks first to find a valid bookmarkId before calling getBookmarkDetail,
+  addNoteToBookmark, toggleFavorite, or exportCitation.
+- Use a blank query in searchBookmarks to retrieve the most recent bookmarks.
+- Use the category parameter in searchBookmarks to narrow results (e.g. 'Deep Learning', 'NLP',
+  'Computer Vision').
+- Prefer searchBookmarks with a specific keyword over iterating all bookmarks.
+
+Constraints:
+- The user must be signed in with X (Twitter) in the Curio app. If functions return a denial
+  error, prompt the user to open Curio and sign in.
+- AI enrichment (summary, tags, category) runs when the Curio app is open; new bookmarks may
+  have null fields until the app processes them.
+- exportCitation returns null for tweet-only bookmarks without a resolved academic source.
+- Maximum 50 results per searchBookmarks call."
+    appfn:displayDescription="@string/app_name" />

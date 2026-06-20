@@ -5,7 +5,9 @@ import android.util.Log
 import com.example.domain.model.Bookmark
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -15,14 +17,34 @@ import com.google.android.gms.tasks.Task
 class FirebaseSyncManager(private val context: Context) {
 
     private var firestoreInstance: FirebaseFirestore? = null
+    private var persistenceConfigured = false
 
     init {
         try {
             ensureFirebaseInitialized()
-            firestoreInstance = FirebaseFirestore.getInstance()
+            val db = FirebaseFirestore.getInstance()
+            if (!persistenceConfigured) {
+                db.firestoreSettings = FirebaseFirestoreSettings.Builder()
+                    .setPersistenceEnabled(true)
+                    .build()
+                persistenceConfigured = true
+            }
+            firestoreInstance = db
             Log.d("FirebaseSyncManager", "Firebase Firestore initialized successfully.")
         } catch (e: Exception) {
             Log.e("FirebaseSyncManager", "Failed to obtain Firestore instance: ${e.message}")
+        }
+    }
+
+    private suspend fun ensureAuthenticated() {
+        val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+        if (auth.currentUser == null) {
+            try {
+                auth.signInAnonymously().awaitTask()
+            } catch (e: Exception) {
+                // Log but don't crash — app still works locally without sync
+                Log.w("FirebaseSyncManager", "Anonymous auth failed", e)
+            }
         }
     }
 
@@ -39,6 +61,17 @@ class FirebaseSyncManager(private val context: Context) {
     }
 
     /**
+     * Per-user bookmark subcollection. Scoping documents under `users/{userId}/bookmarks/{id}`
+     * lets the Firestore security rules enforce ownership by PATH (request.auth.uid == userId)
+     * instead of trusting a client-supplied `userId` field on a shared top-level collection.
+     * See firestore.rules at the repo root. NOTE: full enforcement still requires Firebase Auth
+     * (a real google-services.json + custom-token/anonymous sign-in) — currently absent, so this
+     * is the structural half of the fix.
+     */
+    private fun userBookmarks(db: FirebaseFirestore, userId: String) =
+        db.collection("users").document(userId).collection("bookmarks")
+
+    /**
      * Converts a Play Services Task into a suspendable coroutine result.
      */
     private suspend fun <T> Task<T>.awaitTask(): T = suspendCancellableCoroutine { continuation ->
@@ -52,40 +85,33 @@ class FirebaseSyncManager(private val context: Context) {
     }
 
     /**
+     * Minimal sync payload — omits large PII/content fields (text, ocrText, deepSummary,
+     * entities, sourceAbstract) that should remain on-device only.
+     */
+    private fun buildMinimalMap(userId: String, bookmark: Bookmark): HashMap<String, Any?> = hashMapOf(
+        "id" to bookmark.id,
+        "userId" to userId,
+        "createdAt" to bookmark.createdAt,
+        "updatedAt" to FieldValue.serverTimestamp(),
+        "isFavorite" to bookmark.isFavorite,
+        "isSavedForLater" to bookmark.isSavedForLater,
+        "spaceId" to bookmark.spaceId,
+        "sourceType" to bookmark.sourceType?.name,
+        "sourceId" to bookmark.sourceId,
+        "title" to bookmark.title,
+        "url" to bookmark.url
+    )
+
+    /**
      * Push or update a single bookmark to Firebase Firestore.
      */
     suspend fun pushBookmark(userId: String, bookmark: Bookmark) {
+        ensureAuthenticated()
         val db = firestoreInstance ?: return
         try {
-            val documentId = "${userId}_${bookmark.id}"
-            val data = hashMapOf(
-                "id" to bookmark.id,
-                "text" to bookmark.text,
-                "createdAt" to bookmark.createdAt,
-                "userId" to userId,
-                "title" to bookmark.title,
-                "url" to bookmark.url,
-                "summary" to bookmark.summary,
-                "tags" to bookmark.tags.joinToString(","),
-                "category" to bookmark.category,
-                "imageUrl" to bookmark.imageUrl,
-                "ocrText" to bookmark.ocrText,
-                "isOcrScheduled" to bookmark.isOcrScheduled,
-                "isAnalyzed" to bookmark.isAnalyzed,
-                "sourceType" to bookmark.sourceType?.name,
-                "sourceId" to bookmark.sourceId,
-                "sourceTitle" to bookmark.sourceTitle,
-                "sourceAuthors" to bookmark.sourceAuthors,
-                "sourceAbstract" to bookmark.sourceAbstract,
-                "sourceExtra" to bookmark.sourceExtra,
-                "referenceCount" to bookmark.referenceCount,
-                "entities" to bookmark.entities,
-                "isDeepAnalyzed" to bookmark.isDeepAnalyzed,
-                "deepSummary" to bookmark.deepSummary
-            )
-            db.collection("bookmarks")
-                .document(documentId)
-                .set(data, SetOptions.merge())
+            userBookmarks(db, userId)
+                .document(bookmark.id)
+                .set(buildMinimalMap(userId, bookmark), SetOptions.merge())
                 .awaitTask()
             Log.d("FirebaseSyncManager", "Pushed bookmark successfully to Firestore: ${bookmark.id}")
         } catch (e: Exception) {
@@ -94,20 +120,35 @@ class FirebaseSyncManager(private val context: Context) {
     }
 
     /**
-     * Bulk upload bookmark list to Firestore.
+     * Bulk upload bookmark list to Firestore using WriteBatch (max 500 per batch).
      */
     suspend fun pushBookmarks(userId: String, bookmarks: List<Bookmark>) {
-        bookmarks.forEach { pushBookmark(userId, it) }
+        ensureAuthenticated()
+        val db = firestoreInstance ?: return
+        val userRef = userBookmarks(db, userId)
+        try {
+            bookmarks.chunked(500).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { bookmark ->
+                    val ref = userRef.document(bookmark.id)
+                    batch.set(ref, buildMinimalMap(userId, bookmark), SetOptions.merge())
+                }
+                batch.commit().awaitTask()
+            }
+            Log.d("FirebaseSyncManager", "Bulk pushed ${bookmarks.size} bookmarks to Firestore.")
+        } catch (e: Exception) {
+            Log.e("FirebaseSyncManager", "Error bulk pushing bookmarks to Firestore: ${e.message}")
+        }
     }
 
     /**
      * Pull all bookmarks associated with a specific user from Firebase Firestore.
      */
     suspend fun pullBookmarks(userId: String): List<Bookmark> {
+        ensureAuthenticated()
         val db = firestoreInstance ?: return emptyList()
         return try {
-            val querySnapshot = db.collection("bookmarks")
-                .whereEqualTo("userId", userId)
+            val querySnapshot = userBookmarks(db, userId)
                 .get()
                 .awaitTask()
 
@@ -157,11 +198,11 @@ class FirebaseSyncManager(private val context: Context) {
      * Delete a list of bookmarks from Firestore.
      */
     suspend fun deleteBookmarks(userId: String, ids: List<String>) {
+        ensureAuthenticated()
         val db = firestoreInstance ?: return
         ids.forEach { id ->
             try {
-                val documentId = "${userId}_$id"
-                db.collection("bookmarks").document(documentId).delete().awaitTask()
+                userBookmarks(db, userId).document(id).delete().awaitTask()
                 Log.d("FirebaseSyncManager", "Deleted bookmark from Firestore: $id")
             } catch (e: Exception) {
                 Log.e("FirebaseSyncManager", "Failed to delete firestore bookmark $id: ${e.message}")

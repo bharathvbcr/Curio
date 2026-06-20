@@ -10,15 +10,20 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  // compileSdk 37: required by androidx.appfunctions:appfunctions (AppFunctions). Compile-against
+  // only — targetSdk (36) and minSdk (31) are unchanged, so runtime behavior/device support is the same.
+  compileSdk { version = release(37) }
 
   defaultConfig {
     applicationId = "com.Curio.VBCR"
     // minSdk 31: dynamic color (Material You) and RenderEffect-based glass both require API 31.
     minSdk = 31
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    // Play requires a strictly-increasing versionCode per upload. Override from CI/release
+    // tooling via -PcurioVersionCode / -PcurioVersionName (or gradle.properties) without
+    // editing this file; the defaults are the initial 1.0 release.
+    versionCode = (project.findProperty("curioVersionCode") as String?)?.toInt() ?: 1
+    versionName = (project.findProperty("curioVersionName") as String?) ?: "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -47,7 +52,7 @@ android {
 
     buildConfigField("String", "X_CLIENT_ID", "\"$xClientId\"")
     buildConfigField("String", "X_REDIRECT_URI", "\"$xRedirectUri\"")
-    buildConfigField("String", "HF_TOKEN", "\"$hfToken\"")
+    // HF_TOKEN is NOT baked into BuildConfig — users supply it at runtime via SettingsScreen.
   }
 
   signingConfigs {
@@ -69,7 +74,12 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      // R8 code shrinking/obfuscation + resource shrinking. Keep rules live in
+      // proguard-rules.pro. MUST be validated with a release build + end-to-end smoke
+      // test (auth/fetch/AI/RAG/export) before shipping — this is the one change that
+      // can only be confirmed by actually running R8.
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -78,14 +88,23 @@ android {
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
   buildFeatures {
     compose = true
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  lint {
+    abortOnError = false
+    checkReleaseBuilds = true
+  }
+}
+
+// Align the Kotlin JVM target with Java 17 (compileOptions above).
+kotlin {
+  jvmToolchain(17)
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -95,17 +114,10 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
-// Some unused dependencies are commented out below instead of being removed.
-// This makes it easy to add them back in the future if needed.
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))
-  // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
-  // implementation(libs.androidx.camera.camera2)
-  // implementation(libs.androidx.camera.core)
-  // implementation(libs.androidx.camera.lifecycle)
-  // implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
@@ -130,10 +142,9 @@ dependencies {
   implementation(libs.localagents.rag)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation(libs.logging.interceptor)
+  debugImplementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
-  // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
@@ -143,10 +154,8 @@ dependencies {
   testImplementation(libs.robolectric)
   testImplementation(libs.mockwebserver)
   testImplementation(libs.androidx.room.testing)
-  testImplementation(libs.retrofit)
-  testImplementation(libs.converter.moshi)
-  testImplementation(libs.androidx.room.runtime)
-  testImplementation(libs.androidx.room.ktx)
+  // retrofit, converter.moshi, room.runtime, room.ktx are already on the compile classpath
+  // (implementation above) and therefore visible to unit tests — no testImplementation duplicates needed.
   testImplementation(libs.roborazzi)
   testImplementation(libs.roborazzi.compose)
   testImplementation(libs.roborazzi.junit.rule)
@@ -159,5 +168,12 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
-  implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+  "ksp"(libs.androidx.appfunctions.compiler)
+  implementation(libs.androidx.appfunctions)
+  implementation(libs.androidx.appfunctions.service)
+  implementation(libs.play.services.mlkit.text.recognition)
+}
+
+ksp {
+  arg("appfunctions:aggregateAppFunctions", "true")
 }

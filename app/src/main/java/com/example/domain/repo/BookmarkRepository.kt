@@ -44,7 +44,7 @@ interface BookmarkRepository {
     suspend fun updateEmbedding(id: String, embedding: ByteArray)
     suspend fun getBookmarksWithEmbeddings(userId: String): List<Pair<String, ByteArray>>
     /** Analyzed bookmarks still lacking an embedding — drives the charging-time on-device backfill. */
-    suspend fun getUnembeddedAnalyzed(): List<Bookmark>
+    suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark>
     /** Drops all stored embeddings (e.g. when switching embedding models / vector dimensions). */
     suspend fun clearAllEmbeddings()
 

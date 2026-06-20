@@ -46,6 +46,44 @@
         <service
             android:name=".background.BookmarkSweeperService"
             android:exported="false" />
+
+        <!-- AppFunctions: platform-side service for Android 16+ (API 36+). The
+             enablePlatformAppFunctionService boolean is provided by the appfunctions library's
+             own bools.xml (false by default, true on values-v36). -->
+        <service
+            android:name="androidx.appfunctions.PlatformAppFunctionService"
+            android:permission="android.permission.BIND_APP_FUNCTION_SERVICE"
+            android:exported="true"
+            android:enabled="@bool/enablePlatformAppFunctionService"
+            tools:targetApi="36">
+            <property
+                android:name="android.app.appfunctions.v2"
+                android:value="app_functions_v2.xml" />
+            <intent-filter>
+                <action android:name="android.app.appfunctions.AppFunctionService" />
+            </intent-filter>
+        </service>
+
+        <!-- AppFunctions: extension-library backport for pre-API 36 devices with AppSearch
+             extensions. The enableExtensionAppFunctionService boolean is true by default and
+             switched off on values-v36 by the appfunctions library. -->
+        <service
+            android:name="androidx.appfunctions.ExtensionAppFunctionService"
+            android:permission="android.permission.BIND_APP_FUNCTION_SERVICE"
+            android:exported="true"
+            android:enabled="@bool/enableExtensionAppFunctionService">
+            <property
+                android:name="android.app.appfunctions.v2"
+                android:value="app_functions_v2.xml" />
+            <intent-filter>
+                <action android:name="android.app.appfunctions.AppFunctionService" />
+            </intent-filter>
+        </service>
+
+        <!-- App-level description for AI agents discovering Curio's AppFunctions. -->
+        <property
+            android:name="android.app.appfunctions.app_metadata"
+            android:resource="@xml/app_metadata" />
     </application>
 
 </manifest>

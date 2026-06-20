@@ -35,7 +35,11 @@ class EmbeddingIndexWorker(
         }
 
         return try {
-            val pending = container.bookmarkRepository.getUnembeddedAnalyzed()
+            val userId = container.tokenStore.getUserId() ?: run {
+                Log.d(TAG, "No signed-in user — skipping background indexing")
+                return Result.success()
+            }
+            val pending = container.bookmarkRepository.getUnembeddedAnalyzed(userId)
             if (pending.isEmpty()) {
                 Log.d(TAG, "No unembedded bookmarks — index up to date")
                 return Result.success()
@@ -52,9 +56,16 @@ class EmbeddingIndexWorker(
 
             // More than one batch left → ask WorkManager to run us again (still charging-constrained).
             if (pending.size > MAX_PER_RUN) Result.retry() else Result.success()
-        } catch (e: Exception) {
-            Log.e(TAG, "Background indexing failed: ${e.message}", e)
+        } catch (e: java.io.IOException) {
+            // Network or I/O — retry
+            Log.e(TAG, "I/O error during background indexing, will retry: ${e.message}", e)
             Result.retry()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Model load failure or unrecoverable — don't retry infinitely
+            android.util.Log.e("EmbeddingIndexWorker", "Unrecoverable error, giving up", e)
+            Result.failure()
         }
     }
 

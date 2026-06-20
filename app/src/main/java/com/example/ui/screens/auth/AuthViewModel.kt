@@ -23,6 +23,10 @@ class AuthViewModel(
     private val authRepository: AuthRepository
 ) : ViewModel() {
 
+    // TODO sec-5: Persist activeChallenge to SavedStateHandle to survive process death.
+    // Requires injecting SavedStateHandle into this ViewModel. See AUDIT.md #6.
+    // When adding SavedStateHandle support, also annotate AuthChallenge with
+    // @kotlinx.parcelize.Parcelize and make it implement android.os.Parcelable.
     private var activeChallenge: AuthChallenge? = null
 
     val authState: StateFlow<AuthState> = authRepository.authState()

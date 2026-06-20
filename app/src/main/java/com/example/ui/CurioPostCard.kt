@@ -122,6 +122,8 @@ import kotlinx.coroutines.launch
 import com.example.MainActivity
 import com.example.domain.model.AuthState
 import com.example.domain.model.Bookmark
+import com.example.domain.model.Space
+import com.example.domain.model.SpaceRules
 import com.example.domain.model.CategorySpaces
 import com.example.domain.model.SourceType
 import com.example.ui.components.GlassBottomBar
@@ -173,7 +175,11 @@ import java.util.Locale
 @Composable
 internal fun CurioPostCard(
     bookmark: Bookmark,
-    viewModel: BookmarkViewModel,
+    actions: CurioCardActions,
+    spaces: List<Space>,
+    isProcessing: Boolean,
+    isImagenGenerated: Boolean,
+    imagenUrl: String?,
     tier: GlassTier,
     isSelected: Boolean,
     onToggleSelect: () -> Unit,
@@ -184,15 +190,13 @@ internal fun CurioPostCard(
     onBookmarkClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val analysisState by viewModel.analysisState.collectAsStateWithLifecycle()
-    val spaces by viewModel.spaces.collectAsStateWithLifecycle()
     var isExpanded by remember { mutableStateOf(false) }
     var showOptions by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf(false) }
     var showNewSpaceForCard by remember { mutableStateOf(false) }
     var showNotesEditor by remember { mutableStateOf(false) }
 
-    val isProcessingThisCard = (analysisState as? AnalysisUiState.Processing)?.bookmarkId == bookmark.id
+    val isProcessingThisCard = isProcessing
 
     val imageLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -205,7 +209,7 @@ internal fun CurioPostCard(
                 } else {
                     ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, it))
                 }
-                viewModel.processOcrForBookmark(bookmark.id, bitmap)
+                actions.onProcessOcr(bitmap)
             } catch (e: Exception) { /* ignore */ }
         }
     }
@@ -227,9 +231,11 @@ internal fun CurioPostCard(
         else -> accent
     }
 
-    val shareableText = if (bookmark.isAnalyzed) {
-        "📌 ${bookmark.title ?: "Curio bookmark"}\nCategory: ${bookmark.category ?: "General"}\nTags: ${bookmark.tags.joinToString { "#$it" }}\n\n${bookmark.summary ?: ""}\n\n${bookmark.text}"
-    } else bookmark.text
+    val shareableText = remember(bookmark.isAnalyzed, bookmark.title, bookmark.category, bookmark.tags, bookmark.summary, bookmark.text) {
+        if (bookmark.isAnalyzed) {
+            "📌 ${bookmark.title ?: "Curio bookmark"}\nCategory: ${bookmark.category ?: "General"}\nTags: ${bookmark.tags.joinToString { "#$it" }}\n\n${bookmark.summary ?: ""}\n\n${bookmark.text}"
+        } else bookmark.text
+    }
 
     // Permalink back to the original X post (null for manual/non-tweet entries).
     val tweetLink = tweetUrl(bookmark)
@@ -398,9 +404,7 @@ internal fun CurioPostCard(
             // ── MEDIA: real post image · generated art · or an elegant fallback cover ──
             // Every card gets a visual anchor — image-less entries fall back to a bold
             // category-tinted gradient cover so the feed stays consistent and never bare.
-            val imagenGeneratedIds by viewModel.imagenGeneratedIds.collectAsStateWithLifecycle()
-            val imagenUrls by viewModel.imagenUrls.collectAsStateWithLifecycle()
-            val isImgGenerated = imagenGeneratedIds.contains(bookmark.id)
+            val isImgGenerated = isImagenGenerated
             when {
                 !bookmark.imageUrl.isNullOrBlank() -> {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -438,10 +442,10 @@ internal fun CurioPostCard(
                     }
                 }
                 isImgGenerated -> {
-                    ImagenBookmarkArt(category = bookmark.category, isGenerated = true, onGenerateClick = {}, imageUrl = imagenUrls[bookmark.id], modifier = Modifier.height(if (isExpanded) 140.dp else 88.dp))
+                    ImagenBookmarkArt(category = bookmark.category, isGenerated = true, onGenerateClick = {}, imageUrl = imagenUrl, modifier = Modifier.height(if (isExpanded) 140.dp else 88.dp))
                 }
                 bookmark.isAnalyzed && isExpanded -> {
-                    ImagenBookmarkArt(category = bookmark.category, isGenerated = false, onGenerateClick = { viewModel.generateImagenImage(bookmark.id) }, modifier = Modifier.height(130.dp))
+                    ImagenBookmarkArt(category = bookmark.category, isGenerated = false, onGenerateClick = { actions.onGenerateImagen() }, modifier = Modifier.height(130.dp))
                 }
                 else -> {
                     CurioFallbackCover(bookmark, srcColor, accent, isExpanded)
@@ -455,7 +459,7 @@ internal fun CurioPostCard(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    bookmark.tags.take(4).forEach { tag -> TagChip(tag) { viewModel.selectTag(tag) } }
+                    bookmark.tags.take(4).forEach { tag -> TagChip(tag) { actions.onSelectTag(tag) } }
                     val overflow = bookmark.tags.size - 4
                     if (overflow > 0) {
                         Box(
@@ -499,7 +503,7 @@ internal fun CurioPostCard(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
                                 .background(spColor.copy(alpha = 0.16f))
-                                .pressBounce { viewModel.selectSpace(currentSpace.id) }
+                                .pressBounce { actions.onSelectSpace(currentSpace.id) }
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -515,7 +519,7 @@ internal fun CurioPostCard(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
                                 .border(1.dp, sugColor.copy(alpha = 0.5f), RoundedCornerShape(50))
-                                .pressBounce { viewModel.acceptCategorySuggestion(bookmark) }
+                                .pressBounce { actions.onAcceptCategory() }
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                                 .testTag("suggest_space_${bookmark.id}"),
                             verticalAlignment = Alignment.CenterVertically,
@@ -540,7 +544,7 @@ internal fun CurioPostCard(
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    IconButton(onClick = { viewModel.toggleFavorite(bookmark) }, modifier = Modifier.size(30.dp).testTag("favorite_button_${bookmark.id}")) {
+                    IconButton(onClick = { actions.onToggleFavorite() }, modifier = Modifier.size(48.dp).testTag("favorite_button_${bookmark.id}")) {
                         Icon(
                             imageVector = if (bookmark.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                             contentDescription = if (bookmark.isFavorite) "Unfavorite" else "Favorite",
@@ -548,7 +552,7 @@ internal fun CurioPostCard(
                             tint = if (bookmark.isFavorite) Color(0xFFFF5A6E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                         )
                     }
-                    IconButton(onClick = { viewModel.toggleSavedForLater(bookmark) }, modifier = Modifier.size(30.dp).testTag("readlater_button_${bookmark.id}")) {
+                    IconButton(onClick = { actions.onToggleSavedForLater() }, modifier = Modifier.size(48.dp).testTag("readlater_button_${bookmark.id}")) {
                         Icon(
                             imageVector = Icons.Filled.WatchLater,
                             contentDescription = if (bookmark.isSavedForLater) "Remove from read later" else "Save for later",
@@ -631,7 +635,7 @@ internal fun CurioPostCard(
 
                     if (bookmark.isAnalyzed && bookmark.tags.isNotEmpty()) {
                         FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            bookmark.tags.forEach { tag -> TagChip(tag) { viewModel.selectTag(tag) } }
+                            bookmark.tags.forEach { tag -> TagChip(tag) { actions.onSelectTag(tag) } }
                         }
                     }
 
@@ -661,7 +665,7 @@ internal fun CurioPostCard(
     if (showOptions) {
         CardOptionsSheet(
             bookmark = bookmark,
-            viewModel = viewModel,
+            actions = actions,
             isProcessing = isProcessingThisCard,
             shareableText = shareableText,
             tweetLink = tweetLink,
@@ -680,7 +684,7 @@ internal fun CurioPostCard(
             tier = tier,
             onDismiss = { showNotesEditor = false },
             onSave = { note ->
-                viewModel.updateNotes(bookmark.id, note)
+                actions.onUpdateNotes(note)
                 showNotesEditor = false
             }
         )
@@ -693,7 +697,7 @@ internal fun CurioPostCard(
             tier = tier,
             onDismiss = { showSpacePicker = false },
             onAssign = { spaceId ->
-                viewModel.assignBookmarksToSpace(listOf(bookmark.id), spaceId)
+                actions.onAssignToSpace(spaceId)
                 showSpacePicker = false
             },
             onCreateSpace = {
@@ -709,12 +713,37 @@ internal fun CurioPostCard(
             tier = tier,
             onDismiss = { showNewSpaceForCard = false },
             onConfirm = { name, color, icon, description, rules, isPinned ->
-                viewModel.createSpaceAndAssign(name, color, icon, listOf(bookmark.id), description, rules, isPinned)
+                actions.onCreateSpaceAndAssign(name, color, icon, description, rules, isPinned)
                 showNewSpaceForCard = false
             }
         )
     }
 }
+
+/**
+ * Per-card action callbacks, bound to the bookmark at the call site. Hoisting these (instead of
+ * passing the whole [BookmarkViewModel]) decouples the leaf card from the ViewModel, making it
+ * independently previewable/testable and the dependency explicit. The bookmark id/instance is
+ * captured by each lambda where the underlying VM call needs it.
+ */
+@androidx.compose.runtime.Immutable
+internal data class CurioCardActions(
+    val onProcessOcr: (android.graphics.Bitmap) -> Unit,
+    val onGenerateImagen: () -> Unit,
+    val onSelectTag: (String) -> Unit,
+    val onSelectSpace: (String) -> Unit,
+    val onAcceptCategory: () -> Unit,
+    val onToggleFavorite: () -> Unit,
+    val onToggleSavedForLater: () -> Unit,
+    val onUpdateNotes: (String?) -> Unit,
+    val onAssignToSpace: (String?) -> Unit,
+    val onCreateSpaceAndAssign: (name: String, color: Long, icon: String, description: String, rules: SpaceRules, isPinned: Boolean) -> Unit,
+    val onRunAiAnalysis: () -> Unit,
+    val onRunDeepAnalysis: () -> Unit,
+    val onResolveSource: () -> Unit,
+    val exportBibtex: () -> String?,
+    val onDelete: () -> Unit,
+)
 
 /** A single tappable action inside [CardOptionsSheet]. */
 private data class CardAction(
@@ -733,7 +762,7 @@ private data class CardAction(
 @Composable
 private fun CardOptionsSheet(
     bookmark: Bookmark,
-    viewModel: BookmarkViewModel,
+    actions: CurioCardActions,
     isProcessing: Boolean,
     shareableText: String,
     tweetLink: String?,
@@ -764,15 +793,15 @@ private fun CardOptionsSheet(
         add(CardAction("Copy", Icons.Filled.ContentCopy, cs.onSurface.copy(alpha = 0.7f)) { copyToClipboard(context, shareableText) })
         add(CardAction("Share", Icons.Filled.Share, cs.onSurface.copy(alpha = 0.7f)) { shareBookmark(context, shareableText) })
         if (!isProcessing) {
-            add(CardAction(if (bookmark.isAnalyzed) "Re-curate" else "AI Curate", if (bookmark.isAnalyzed) Icons.Default.Autorenew else Icons.Default.Psychology, cs.primary) { viewModel.runAiAnalysis(bookmark) })
+            add(CardAction(if (bookmark.isAnalyzed) "Re-curate" else "AI Curate", if (bookmark.isAnalyzed) Icons.Default.Autorenew else Icons.Default.Psychology, cs.primary) { actions.onRunAiAnalysis() })
         }
-        add(CardAction(if (bookmark.isDeepAnalyzed) "Reanalyze+" else "Deep", Icons.Default.AutoAwesome, cs.tertiary) { viewModel.runDeepAnalysis(bookmark) })
+        add(CardAction(if (bookmark.isDeepAnalyzed) "Reanalyze+" else "Deep", Icons.Default.AutoAwesome, cs.tertiary) { actions.onRunDeepAnalysis() })
         add(CardAction(if (!bookmark.ocrText.isNullOrBlank()) "Update image" else "OCR shot", Icons.Default.Screenshot, cs.secondary, onOcr))
         if (bookmark.sourceType == null) {
-            add(CardAction("Resolve source", Icons.Default.Link, cs.secondary) { viewModel.resolveSource(bookmark) })
+            add(CardAction("Resolve source", Icons.Default.Link, cs.secondary) { actions.onResolveSource() })
         }
         if (bookmark.sourceType == SourceType.ARXIV) {
-            viewModel.exportSingleBibtex(bookmark)?.let { bib ->
+            actions.exportBibtex()?.let { bib ->
                 add(CardAction("BibTeX", Icons.Default.ContentCopy, Color(0xFFE53935)) { copyToClipboard(context, bib, "BibTeX") })
             }
         }
@@ -817,8 +846,8 @@ private fun CardOptionsSheet(
             SheetDivider()
 
             // ── Frequent toggles ──
-            SheetToggleRow("Favorite", "Favorited", Icons.Filled.Favorite, Icons.Filled.FavoriteBorder, bookmark.isFavorite, Color(0xFFFF5A6E)) { act { viewModel.toggleFavorite(bookmark) } }
-            SheetToggleRow("Save for later", "Saved for later", Icons.Filled.WatchLater, Icons.Filled.WatchLater, bookmark.isSavedForLater, cs.secondary) { act { viewModel.toggleSavedForLater(bookmark) } }
+            SheetToggleRow("Favorite", "Favorited", Icons.Filled.Favorite, Icons.Filled.FavoriteBorder, bookmark.isFavorite, Color(0xFFFF5A6E)) { act { actions.onToggleFavorite() } }
+            SheetToggleRow("Save for later", "Saved for later", Icons.Filled.WatchLater, Icons.Filled.WatchLater, bookmark.isSavedForLater, cs.secondary) { act { actions.onToggleSavedForLater() } }
             SheetDivider()
 
             // ── Tools / links ──
@@ -863,7 +892,7 @@ private fun CardOptionsSheet(
                         "DELETE",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
                         color = cs.error,
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(cs.error.copy(alpha = 0.16f)).clickable { act { viewModel.deleteBookmarks(listOf(bookmark.id)) } }.padding(horizontal = 14.dp, vertical = 8.dp).testTag("sheet_delete_confirm_button_${bookmark.id}")
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(cs.error.copy(alpha = 0.16f)).clickable { act { actions.onDelete() } }.padding(horizontal = 14.dp, vertical = 8.dp).testTag("sheet_delete_confirm_button_${bookmark.id}")
                     )
                 }
             } else {

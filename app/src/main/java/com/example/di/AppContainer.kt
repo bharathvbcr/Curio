@@ -1,6 +1,7 @@
 package com.example.di
 
 import android.content.Context
+import com.example.BuildConfig
 import com.example.data.embedding.EmbeddingService
 import com.example.data.remote.ArxivClient
 import com.example.data.remote.GithubApi
@@ -18,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.util.concurrent.TimeUnit
 
 class AppContainer(private val context: Context) {
 
@@ -29,12 +31,35 @@ class AppContainer(private val context: Context) {
         Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
     }
 
+    // Shared debug logging interceptor — headers only (never body) to avoid leaking OAuth
+    // tokens and the xAI Bearer key to logcat. Authorization header is always redacted.
+    private val loggingInterceptor: HttpLoggingInterceptor by lazy {
+        HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.HEADERS
+            redactHeader("Authorization")
+        }
+    }
+
+    // Primary client used by xAI (long-running LLM calls) and X / Twitter APIs.
+    // xAI streaming responses can take well over a minute, so 120 s read timeout.
     private val okHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
-            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        OkHttpClient.Builder().apply {
+            if (BuildConfig.DEBUG) addInterceptor(loggingInterceptor)
+        }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    // Lightweight client for metadata APIs (ArXiv, Crossref, HuggingFace) that return small
+    // JSON payloads quickly. Shorter timeouts surface network issues faster.
+    private val metadataClient: OkHttpClient by lazy {
+        OkHttpClient.Builder().apply {
+            if (BuildConfig.DEBUG) addInterceptor(loggingInterceptor)
+        }
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .build()
     }
 
@@ -55,7 +80,7 @@ class AppContainer(private val context: Context) {
 
     private val huggingFaceRetrofit: Retrofit by lazy {
         Retrofit.Builder().baseUrl("https://huggingface.co/api/")
-            .client(okHttpClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+            .client(metadataClient).addConverterFactory(MoshiConverterFactory.create(moshi)).build()
     }
 
     private val xAuthApi: XAuthApi by lazy { retrofit.create(XAuthApi::class.java) }
@@ -111,7 +136,11 @@ class AppContainer(private val context: Context) {
         com.example.data.embedding.EmbeddingProviderSelector(onDeviceEmbeddingProvider, embeddingService)
     }
 
-    val arxivClient: ArxivClient by lazy { ArxivClient(okHttpClient) }
+    val arxivClient: ArxivClient by lazy { ArxivClient(metadataClient) }
+
+    val crossrefClient: com.example.data.remote.CrossrefClient by lazy {
+        com.example.data.remote.CrossrefClient(metadataClient)
+    }
 
     private val githubApi: GithubApi by lazy { githubRetrofit.create(GithubApi::class.java) }
 
@@ -120,7 +149,7 @@ class AppContainer(private val context: Context) {
     }
 
     val sourceResolver: SourceResolver by lazy {
-        SourceResolver(arxivClient, githubApi, huggingFaceApi)
+        SourceResolver(arxivClient, githubApi, huggingFaceApi, crossrefClient)
     }
 
     val database: com.example.data.local.AppDatabase by lazy {

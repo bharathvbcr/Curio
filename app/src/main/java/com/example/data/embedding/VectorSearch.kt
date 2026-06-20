@@ -18,16 +18,34 @@ object VectorSearch {
         return if (denom < 1e-10f) 0f else dot / denom
     }
 
+    /** Default cosine floor below which a candidate is considered irrelevant to the query. */
+    const val DEFAULT_MIN_SIMILARITY = 0.30f
+
+    /**
+     * Top-k most similar candidate ids. [minSimilarity] drops irrelevant matches so an
+     * empty/off-topic query no longer always returns [k] items. Candidates whose vector
+     * dimension differs from [query] score 0 (see [cosineSimilarity]) and are filtered out,
+     * which also guards against mixing cloud and on-device embeddings of different sizes.
+     */
     fun topK(
         query: FloatArray,
         candidates: List<Pair<String, FloatArray>>,
-        k: Int = 15
-    ): List<String> {
+        k: Int = 15,
+        minSimilarity: Float = DEFAULT_MIN_SIMILARITY
+    ): List<String> = topKScored(query, candidates, k, minSimilarity).map { it.first }
+
+    /** Same as [topK] but keeps the similarity score for each id (e.g. for ranking/citations). */
+    fun topKScored(
+        query: FloatArray,
+        candidates: List<Pair<String, FloatArray>>,
+        k: Int = 15,
+        minSimilarity: Float = DEFAULT_MIN_SIMILARITY
+    ): List<Pair<String, Float>> {
         return candidates
             .map { (id, emb) -> id to cosineSimilarity(query, emb) }
+            .filter { it.second >= minSimilarity }
             .sortedByDescending { it.second }
             .take(k)
-            .map { it.first }
     }
 
     fun FloatArray.toByteArray(): ByteArray {

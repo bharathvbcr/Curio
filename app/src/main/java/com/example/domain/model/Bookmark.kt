@@ -1,6 +1,6 @@
 package com.example.domain.model
 
-enum class SourceType { ARXIV, GITHUB, HUGGING_FACE, TWEET }
+enum class SourceType { ARXIV, GITHUB, HUGGING_FACE, TWEET, DOI }
 
 data class Bookmark(
     val id: String,

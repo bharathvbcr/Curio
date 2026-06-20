@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// Curio Firestore security rules.
+//
+// Bookmarks are stored per-user under /users/{userId}/bookmarks/{bookmarkId}
+// (see FirebaseSyncManager). Access is allowed only when the authenticated caller
+// owns the path. This requires Firebase Auth — wire it up (a real google-services.json
+// plus custom-token sign-in minted after verifying the X session, or anonymous-then-link)
+// before enabling real cloud sync. Until then these rules deny all access by default,
+// which is the safe posture: a client can never read or overwrite another user's corpus
+// by passing a public X userId.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // A user may read/write only their own bookmark subtree.
+    match /users/{userId}/bookmarks/{bookmarkId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

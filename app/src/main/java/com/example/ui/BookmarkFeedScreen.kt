@@ -167,7 +167,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun BookmarkFeedScreen(
     viewModel: BookmarkViewModel,
@@ -180,6 +180,11 @@ internal fun BookmarkFeedScreen(
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     val forceLocalNano by viewModel.forceLocalNano.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
+    // Collected ONCE here (not per card) so a single card's processing/imagen change no longer
+    // forces every CurioPostCard to recompose; per-card values are derived in the items loop.
+    val analysisState by viewModel.analysisState.collectAsStateWithLifecycle()
+    val imagenGeneratedIds by viewModel.imagenGeneratedIds.collectAsStateWithLifecycle()
+    val imagenUrls by viewModel.imagenUrls.collectAsStateWithLifecycle()
 
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
@@ -200,7 +205,11 @@ internal fun BookmarkFeedScreen(
     var showModelDialog by remember { mutableStateOf(false) }
     val isSyncing = syncState is SyncUiState.Loading
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = isSyncing,
+        onRefresh = { viewModel.syncBookmarks(fetchNextPage = false) },
+        modifier = Modifier.fillMaxSize()
+    ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -249,9 +258,12 @@ internal fun BookmarkFeedScreen(
                             androidx.compose.material3.TextField(
                                 value = searchQuery,
                                 onValueChange = { viewModel.updateSearchQuery(it) },
-                                placeholder = { Text("Search your index…", style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))) },
+                                placeholder = { Text("Search your index…", style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))) },
                                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                                 singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                                ),
                                 colors = androidx.compose.material3.TextFieldDefaults.colors(
                                     focusedContainerColor = Color.Transparent,
                                     unfocusedContainerColor = Color.Transparent,
@@ -629,19 +641,90 @@ internal fun BookmarkFeedScreen(
         // 4. BOOKMARK ENTRY ROW LIST
         if (bookmarks.isEmpty()) {
             item {
-                CurioEmptyState(
-                    tier = tier,
-                    onActionClick = { viewModel.syncBookmarks(fetchNextPage = false) }
-                )
+                val isFiltering = searchQuery.isNotBlank() || selectedTag != null ||
+                    quickFilter != QuickFilter.ALL || selectedSpaceId != null
+                if (isFiltering && stats.totalCount > 0) {
+                    // Distinct state for "your filter/search matched nothing" vs "you have no
+                    // bookmarks yet" — the latter's sync CTA would be the wrong action here.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Text(
+                            "No matches",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            "Nothing in your index matches the current search and filters.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                                .pressBounce { viewModel.clearAllFilters() }
+                                .padding(horizontal = 20.dp, vertical = 10.dp)
+                        ) {
+                            Text("Clear filters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                } else {
+                    CurioEmptyState(
+                        tier = tier,
+                        onActionClick = { viewModel.syncBookmarks(fetchNextPage = false) }
+                    )
+                }
             }
         } else {
             items(bookmarks, key = { it.id }) { item ->
                 Box(
                     modifier = Modifier.animateItem()
                 ) {
+                    val isProcessing = (analysisState as? AnalysisUiState.Processing)?.bookmarkId == item.id
+                    // Wrapped in remember(item.id) so the CurioCardActions object is only
+                    // recreated when the item's identity changes, not on every recomposition.
+                    // Lambdas that close over `item` (e.g. onAcceptCategory, onRunAiAnalysis)
+                    // correctly capture the latest value because the key changes whenever item
+                    // changes identity in the list.
+                    val cardActions = remember(item.id) {
+                        CurioCardActions(
+                            onProcessOcr = { bmp -> viewModel.processOcrForBookmark(item.id, bmp) },
+                            onGenerateImagen = { viewModel.generateImagenImage(item.id) },
+                            onSelectTag = { viewModel.selectTag(it) },
+                            onSelectSpace = { viewModel.selectSpace(it) },
+                            onAcceptCategory = { viewModel.acceptCategorySuggestion(item) },
+                            onToggleFavorite = { viewModel.toggleFavorite(item) },
+                            onToggleSavedForLater = { viewModel.toggleSavedForLater(item) },
+                            onUpdateNotes = { viewModel.updateNotes(item.id, it) },
+                            onAssignToSpace = { viewModel.assignBookmarksToSpace(listOf(item.id), it) },
+                            onCreateSpaceAndAssign = { name, color, icon, description, rules, isPinned ->
+                                viewModel.createSpaceAndAssign(name, color, icon, listOf(item.id), description, rules, isPinned)
+                            },
+                            onRunAiAnalysis = { viewModel.runAiAnalysis(item) },
+                            onRunDeepAnalysis = { viewModel.runDeepAnalysis(item) },
+                            onResolveSource = { viewModel.resolveSource(item) },
+                            exportBibtex = { viewModel.exportSingleBibtex(item) },
+                            onDelete = { viewModel.deleteBookmarks(listOf(item.id)) },
+                        )
+                    }
                     CurioPostCard(
                         bookmark = item,
-                        viewModel = viewModel,
+                        actions = cardActions,
+                        spaces = spaces,
+                        isProcessing = isProcessing,
+                        isImagenGenerated = imagenGeneratedIds.contains(item.id),
+                        imagenUrl = imagenUrls[item.id],
                         tier = tier,
                         isSelected = selectedIds.contains(item.id),
                         onToggleSelect = {
@@ -906,6 +989,35 @@ internal fun BookmarkFeedScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text("BIBTEX", style = MaterialTheme.typography.labelMedium.copy(color = Color.White, fontWeight = FontWeight.Black))
+                        }
+                    }
+
+                    // Additional citation formats for reference managers / notes.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            Triple("RIS", Color(0xFF455A64), { viewModel.exportRis(selectedBookmarks) }),
+                            Triple("CSL-JSON", Color(0xFF5E35B1), { viewModel.exportCslJson(selectedBookmarks) }),
+                            Triple("MARKDOWN", Color(0xFF00695C), { viewModel.exportMarkdown(selectedBookmarks) })
+                        ).forEach { (label, color, build) ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .background(color, RoundedCornerShape(14.dp))
+                                    .clickable {
+                                        val out = build()
+                                        copyToClipboard(context, out, "$label citations")
+                                        shareBookmark(context, out)
+                                        selectedIds = emptySet()
+                                        dismiss()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(label, style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Black))
+                            }
                         }
                     }
 

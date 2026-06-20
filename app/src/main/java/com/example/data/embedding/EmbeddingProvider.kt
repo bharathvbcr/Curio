@@ -25,6 +25,9 @@ interface EmbeddingProvider {
 
 /** Shared document-text assembly so on-device and cloud embed the *same* text for a bookmark. */
 object EmbeddingText {
+    private const val CHUNK_CHARS = 800
+    private const val MAX_CHUNKS = 4
+
     fun forDocument(b: Bookmark): String = buildString {
         b.sourceTitle?.let { append(it); append(". ") }
         b.sourceAbstract?.let { append(it.take(1000)); append(" ") }
@@ -33,6 +36,46 @@ object EmbeddingText {
         b.entities?.let { append(it.replace(Regex("[\"{}\\[\\]]"), " ").take(200)); append(" ") }
         append(b.text.take(500))
     }.trim().ifBlank { b.text }
+
+    /**
+     * Splits a document into up to [MAX_CHUNKS] retrieval chunks so long papers don't lose their
+     * body content the way single-vector truncation did. Chunk 1 is the high-signal header
+     * (title + abstract + summary); the rest window over the body. The per-chunk vectors are
+     * mean-pooled by the provider into one vector, so the storage schema is unchanged.
+     */
+    fun chunksForDocument(b: Bookmark): List<String> {
+        val header = buildString {
+            b.sourceTitle?.let { append(it); append(". ") }
+            b.sourceAbstract?.let { append(it); append(" ") }
+            b.summary?.let { append(it); append(" ") }
+            if (b.tags.isNotEmpty()) { append(b.tags.joinToString(" ")); append(" ") }
+        }.trim()
+        val chunks = mutableListOf<String>()
+        if (header.isNotBlank()) chunks.add(header.take(CHUNK_CHARS))
+        val body = b.text.trim()
+        var i = 0
+        while (i < body.length && chunks.size < MAX_CHUNKS) {
+            chunks.add(body.substring(i, minOf(i + CHUNK_CHARS, body.length)))
+            i += CHUNK_CHARS
+        }
+        return chunks.ifEmpty { listOf(forDocument(b)) }
+    }
+
+    /**
+     * Element-wise mean of per-chunk vectors → one document vector (cosine similarity normalises,
+     * so no extra L2 step is needed). Vectors of a differing dimension are not pooled (returns the
+     * first), guarding against mixing incompatible embedding sizes.
+     */
+    fun meanPool(vectors: List<FloatArray>): FloatArray? {
+        val nonEmpty = vectors.filter { it.isNotEmpty() }
+        if (nonEmpty.isEmpty()) return null
+        val dim = nonEmpty.first().size
+        if (nonEmpty.any { it.size != dim }) return nonEmpty.first()
+        val acc = FloatArray(dim)
+        for (v in nonEmpty) for (j in 0 until dim) acc[j] += v[j]
+        for (j in 0 until dim) acc[j] /= nonEmpty.size
+        return acc
+    }
 }
 
 /**
@@ -69,8 +112,12 @@ class OnDeviceEmbeddingProvider(
 
     override fun isOnDevice(): Boolean = availability.isEmbeddingGemmaAvailable()
 
-    override suspend fun embedDocument(bookmark: Bookmark): FloatArray? =
-        embed(EmbeddingText.forDocument(bookmark), EmbedData.TaskType.RETRIEVAL_DOCUMENT)
+    override suspend fun embedDocument(bookmark: Bookmark): FloatArray? {
+        // Chunk long documents and mean-pool the per-chunk vectors so body content is retained.
+        val vectors = EmbeddingText.chunksForDocument(bookmark)
+            .mapNotNull { embed(it, EmbedData.TaskType.RETRIEVAL_DOCUMENT) }
+        return EmbeddingText.meanPool(vectors)
+    }
 
     override suspend fun embedQuery(query: String): FloatArray? =
         embed(query, EmbedData.TaskType.RETRIEVAL_QUERY)

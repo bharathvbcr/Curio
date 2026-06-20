@@ -4,11 +4,13 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.BuildConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -17,6 +19,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 // Preferences extension delegate
 val Context.tokenDataStore: DataStore<Preferences> by preferencesDataStore(name = "curio_tokens")
@@ -28,6 +31,7 @@ val Context.tokenDataStore: DataStore<Preferences> by preferencesDataStore(name 
 class TokenStore(private val context: Context) {
 
     companion object {
+        private const val TAG = "TokenStore"
         private const val KEY_ALIAS = "CurioTokenStoreKey"
         private const val ANDROID_KEY_STORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -38,6 +42,7 @@ class TokenStore(private val context: Context) {
         private val KEY_USERNAME = stringPreferencesKey("user_username")
         private val KEY_NAME = stringPreferencesKey("user_name")
         private val KEY_HF_TOKEN = stringPreferencesKey("hf_token_surface")
+        private val KEY_XAI_KEY = stringPreferencesKey("xai_key_surface")
     }
 
     init {
@@ -64,6 +69,10 @@ class TokenStore(private val context: Context) {
     val nameFlow: Flow<String?> = context.tokenDataStore.data.map { preferences ->
         preferences[KEY_NAME]
     }
+
+    /** Returns the currently logged-in X userId, or null if not signed in. */
+    suspend fun getUserId(): String? =
+        context.tokenDataStore.data.first()[KEY_USER_ID]
 
     /**
      * Checks if we have cached credentials.
@@ -129,6 +138,23 @@ class TokenStore(private val context: Context) {
     }
 
     /**
+     * Resolves the user-supplied xAI API key (encrypted), or null if none was saved. Independent
+     * of the X session — intentionally not removed by [clear].
+     */
+    suspend fun getXaiKey(): String? {
+        val encryptedBase64 = context.tokenDataStore.data.first()[KEY_XAI_KEY] ?: return null
+        return decrypt(encryptedBase64)
+    }
+
+    /** Persists (or clears, with a blank value) the xAI API key under AES-GCM encryption. */
+    suspend fun saveXaiKey(key: String) {
+        context.tokenDataStore.edit { preferences ->
+            if (key.isBlank()) preferences.remove(KEY_XAI_KEY)
+            else preferences[KEY_XAI_KEY] = encrypt(key)
+        }
+    }
+
+    /**
      * Purges all locally cached session elements completely.
      */
     suspend fun clear() {
@@ -142,6 +168,15 @@ class TokenStore(private val context: Context) {
     }
 
     // --- CRYPTO LOGIC ---
+
+    /**
+     * Synchronous credential purge used by the KeyStore failure path in release builds.
+     * Runs on whatever thread calls [getOrCreateSecretKey], which is fine — DataStore
+     * write operations are serialized internally.
+     */
+    private fun clearAll() {
+        kotlinx.coroutines.runBlocking { clear() }
+    }
 
     private var softwareFallbackKey: SecretKey? = null
 
@@ -166,12 +201,19 @@ class TokenStore(private val context: Context) {
             keyGenerator.init(spec)
             return keyGenerator.generateKey()
         } catch (e: Exception) {
-            // Software fallback for JVM unit and screenshot tests where AndroidKeyStore provider is absent
-            return softwareFallbackKey ?: synchronized(this) {
-                softwareFallbackKey ?: javax.crypto.spec.SecretKeySpec(
-                    ByteArray(16) { 0x55.toByte() }, // 128-bit stable fallback test key
-                    "AES"
-                ).also { softwareFallbackKey = it }
+            // Software fallback only in debug builds (JVM unit / screenshot tests where
+            // AndroidKeyStore provider is absent). In release builds we clear credentials and
+            // surface an exception so the caller can handle the failure explicitly.
+            if (BuildConfig.DEBUG) {
+                return softwareFallbackKey ?: synchronized(this) {
+                    softwareFallbackKey ?: SecretKeySpec(
+                        ByteArray(16) { 0x55.toByte() }, // 128-bit stable fallback test key
+                        "AES"
+                    ).also { softwareFallbackKey = it }
+                }
+            } else {
+                clearAll()
+                throw SecurityException("AndroidKeyStore unavailable; credentials cleared", e)
             }
         }
     }
@@ -223,7 +265,7 @@ class TokenStore(private val context: Context) {
             val decryptedBytes = cipher.doFinal(cipherText)
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w(TAG, "Decryption/KeyStore error", e)
             null
         }
     }

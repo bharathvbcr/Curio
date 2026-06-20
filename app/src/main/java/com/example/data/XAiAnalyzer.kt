@@ -82,9 +82,9 @@ class XAiAnalyzer(
 
         Log.d("XAiAnalyzer", "Calling xAI API for analysis...")
         try {
-            val apiKey = com.example.BuildConfig.XAI_API_KEY
-            if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
-                throw Exception("xAI API key is missing. Please set XAI_API_KEY in the Secrets panel.")
+            val apiKey = XaiKeyStore.resolve()
+            if (!XaiKeyStore.isConfigured()) {
+                throw Exception("xAI API key is missing. Add your key in Settings.")
             }
 
             val content = buildString {
@@ -130,8 +130,8 @@ class XAiAnalyzer(
         ocrText: String?,
         sourceAbstract: String? = null
     ): AnalysisResult = withContext(Dispatchers.Default) {
-        val apiKey = com.example.BuildConfig.XAI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
+        val apiKey = XaiKeyStore.resolve()
+        if (!XaiKeyStore.isConfigured()) {
             return@withContext analyzeBookmark(text, ocrText, AnalysisConfig(forceLocal = false), sourceAbstract)
         }
         try {
@@ -170,8 +170,8 @@ class XAiAnalyzer(
         ocrText: String?,
         sourceAbstract: String?
     ): DeepAnalysisResult = withContext(Dispatchers.Default) {
-        val apiKey = com.example.BuildConfig.XAI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
+        val apiKey = XaiKeyStore.resolve()
+        if (!XaiKeyStore.isConfigured()) {
             throw Exception("xAI API key required for deep analysis")
         }
 
@@ -294,9 +294,9 @@ class XAiAnalyzer(
         systemInstruction: String = "You are a helpful AI assistant.",
         searchParameters: XAiSearchParameters? = null
     ): ChatResponse = withContext(Dispatchers.Default) {
-        val apiKey = com.example.BuildConfig.XAI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
-            return@withContext ChatResponse("xAI API key is missing. Please set your XAI_API_KEY in the Secrets panel.")
+        val apiKey = XaiKeyStore.resolve()
+        if (!XaiKeyStore.isConfigured()) {
+            return@withContext ChatResponse("xAI API key is missing. Add your key in Settings.")
         }
         val request = XAiRequest(
             model = com.example.data.remote.GrokModels.CHAT,
@@ -324,8 +324,8 @@ class XAiAnalyzer(
      * so the caller can surface a clear "key required" state rather than a silent empty digest.
      */
     suspend fun generateWeeklyDigest(itemsBlock: String, itemCount: Int): String = withContext(Dispatchers.Default) {
-        val apiKey = com.example.BuildConfig.XAI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_XAI_API_KEY") {
+        val apiKey = XaiKeyStore.resolve()
+        if (!XaiKeyStore.isConfigured()) {
             throw Exception("xAI API key required for the weekly digest")
         }
 
