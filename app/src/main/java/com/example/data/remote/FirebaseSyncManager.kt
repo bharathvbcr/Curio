@@ -16,18 +16,25 @@ import com.google.android.gms.tasks.Task
 
 class FirebaseSyncManager(private val context: Context) {
 
+    companion object {
+        @Volatile private var persistenceConfigured = false
+    }
+
     private var firestoreInstance: FirebaseFirestore? = null
-    private var persistenceConfigured = false
 
     init {
         try {
             ensureFirebaseInitialized()
             val db = FirebaseFirestore.getInstance()
             if (!persistenceConfigured) {
-                db.firestoreSettings = FirebaseFirestoreSettings.Builder()
-                    .setPersistenceEnabled(true)
-                    .build()
-                persistenceConfigured = true
+                synchronized(FirebaseSyncManager::class.java) {
+                    if (!persistenceConfigured) {
+                        db.firestoreSettings = FirebaseFirestoreSettings.Builder()
+                            .setPersistenceEnabled(true)
+                            .build()
+                        persistenceConfigured = true
+                    }
+                }
             }
             firestoreInstance = db
             Log.d("FirebaseSyncManager", "Firebase Firestore initialized successfully.")
@@ -36,15 +43,15 @@ class FirebaseSyncManager(private val context: Context) {
         }
     }
 
-    private suspend fun ensureAuthenticated() {
+    private suspend fun ensureAuthenticated(): Boolean {
         val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
-        if (auth.currentUser == null) {
-            try {
-                auth.signInAnonymously().awaitTask()
-            } catch (e: Exception) {
-                // Log but don't crash — app still works locally without sync
-                Log.w("FirebaseSyncManager", "Anonymous auth failed", e)
-            }
+        if (auth.currentUser != null) return true
+        return try {
+            auth.signInAnonymously().awaitTask()
+            true
+        } catch (e: Exception) {
+            Log.w("FirebaseSyncManager", "Anonymous auth failed — Firestore ops may fail", e)
+            false
         }
     }
 
@@ -106,7 +113,10 @@ class FirebaseSyncManager(private val context: Context) {
      * Push or update a single bookmark to Firebase Firestore.
      */
     suspend fun pushBookmark(userId: String, bookmark: Bookmark) {
-        ensureAuthenticated()
+        if (!ensureAuthenticated()) {
+            Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
+            return
+        }
         val db = firestoreInstance ?: return
         try {
             userBookmarks(db, userId)
@@ -123,7 +133,10 @@ class FirebaseSyncManager(private val context: Context) {
      * Bulk upload bookmark list to Firestore using WriteBatch (max 500 per batch).
      */
     suspend fun pushBookmarks(userId: String, bookmarks: List<Bookmark>) {
-        ensureAuthenticated()
+        if (!ensureAuthenticated()) {
+            Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
+            return
+        }
         val db = firestoreInstance ?: return
         val userRef = userBookmarks(db, userId)
         try {
@@ -145,7 +158,10 @@ class FirebaseSyncManager(private val context: Context) {
      * Pull all bookmarks associated with a specific user from Firebase Firestore.
      */
     suspend fun pullBookmarks(userId: String): List<Bookmark> {
-        ensureAuthenticated()
+        if (!ensureAuthenticated()) {
+            Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
+            return emptyList()
+        }
         val db = firestoreInstance ?: return emptyList()
         return try {
             val querySnapshot = userBookmarks(db, userId)
@@ -154,7 +170,7 @@ class FirebaseSyncManager(private val context: Context) {
 
             querySnapshot.documents.mapNotNull { doc ->
                 val id = doc.getString("id") ?: return@mapNotNull null
-                val text = doc.getString("text") ?: return@mapNotNull null
+                val text = doc.getString("text") ?: ""
                 val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
                 // TODO: last-writer-wins conflict resolution — read cloudUpdatedAt here and
                 //  compare against the local copy's createdAt as a proxy once BookmarkEntity
@@ -209,7 +225,10 @@ class FirebaseSyncManager(private val context: Context) {
      */
     suspend fun deleteBookmarks(userId: String, ids: List<String>) {
         if (ids.isEmpty()) return
-        ensureAuthenticated()
+        if (!ensureAuthenticated()) {
+            Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
+            return
+        }
         val db = firestoreInstance ?: return
         try {
             ids.chunked(500).forEach { chunk ->

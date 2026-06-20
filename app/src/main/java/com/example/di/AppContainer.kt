@@ -31,11 +31,22 @@ class AppContainer(private val context: Context) {
         Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
     }
 
-    // Shared debug logging interceptor — headers only (never body) to avoid leaking OAuth
+    // Separate debug logging interceptors — headers only (never body) to avoid leaking OAuth
     // tokens and the xAI Bearer key to logcat. Authorization header is always redacted.
-    private val loggingInterceptor: HttpLoggingInterceptor by lazy {
+    // Two distinct instances are required: OkHttp interceptors are stateful (they hold the
+    // redacted-headers set) and sharing one instance across two clients risks concurrent
+    // mutation if either client's builder modifies it after construction.
+    private val mainLoggingInterceptor: HttpLoggingInterceptor by lazy {
         HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.HEADERS
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+                    else HttpLoggingInterceptor.Level.NONE
+            redactHeader("Authorization")
+        }
+    }
+    private val metadataLoggingInterceptor: HttpLoggingInterceptor by lazy {
+        HttpLoggingInterceptor().apply {
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+                    else HttpLoggingInterceptor.Level.NONE
             redactHeader("Authorization")
         }
     }
@@ -44,7 +55,7 @@ class AppContainer(private val context: Context) {
     // xAI streaming responses can take well over a minute, so 120 s read timeout.
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder().apply {
-            if (BuildConfig.DEBUG) addInterceptor(loggingInterceptor)
+            if (BuildConfig.DEBUG) addInterceptor(mainLoggingInterceptor)
         }
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
@@ -56,7 +67,7 @@ class AppContainer(private val context: Context) {
     // JSON payloads quickly. Shorter timeouts surface network issues faster.
     private val metadataClient: OkHttpClient by lazy {
         OkHttpClient.Builder().apply {
-            if (BuildConfig.DEBUG) addInterceptor(loggingInterceptor)
+            if (BuildConfig.DEBUG) addInterceptor(metadataLoggingInterceptor)
         }
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)

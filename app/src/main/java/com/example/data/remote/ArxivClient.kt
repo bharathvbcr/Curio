@@ -131,7 +131,7 @@ class ArxivClient(
                 authors = authors,
                 abstract = abstractBuilder.toString().trim().replace(Regex("\\s+"), " "),
                 published = published.trim().take(10),
-                categories = categories.filter { it.matches(Regex("[a-z-]+\\.[A-Z]+")) }
+                categories = categories.filter { it.matches(Regex("[a-zA-Z-]+\\.[A-Z]+")) }
             )
         } catch (e: Exception) {
             Log.e("ArxivClient", "Parse error: ${e.message}")

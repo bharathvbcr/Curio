@@ -27,24 +27,25 @@ class BookmarkSweeperService : Service() {
         // Bound work per cycle and pace requests so a large library can't fire a burst of HEADs.
         private const val MAX_CHECKS_PER_CYCLE = 50
         private const val INTER_REQUEST_DELAY_MS = 250L
+        private const val CHANNEL_ID = "curio_sweeper"
+        private const val NOTIFICATION_ID = 1001
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val channelId = "curio_sweeper"
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = android.app.NotificationChannel(
-                channelId, "Research Index Sync", android.app.NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Research Index Sync", android.app.NotificationManager.IMPORTANCE_LOW
             )
             (getSystemService(android.app.NotificationManager::class.java))?.createNotificationChannel(channel)
         }
-        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+        val notification = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Curio: Syncing bookmarks")
             .setSmallIcon(android.R.drawable.ic_popup_sync)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
             .build()
-        startForeground(1001, notification)
+        startForeground(NOTIFICATION_ID, notification)
 
         if (!isRunning) {
             isRunning = true

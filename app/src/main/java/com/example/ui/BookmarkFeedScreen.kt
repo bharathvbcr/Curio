@@ -440,6 +440,8 @@ internal fun BookmarkFeedScreen(
                 // ── Row 4: Space chips — quick-switch the feed between collections ──
                 // Spaces have replaced the old "category" chips; AI categories now seed Spaces, so
                 // this single row is the unified way to scope the feed.
+                // rememberScrollState() is unconditional — calling it inside an if block would
+                // violate Compose's rules of hooks and crash when spaces transitions empty↔non-empty.
                 val spaceChipsScrollState = rememberScrollState()
                 if (spaces.isNotEmpty()) {
                     Row(
@@ -692,12 +694,12 @@ internal fun BookmarkFeedScreen(
                     modifier = Modifier.animateItem()
                 ) {
                     val isProcessing = (analysisState as? AnalysisUiState.Processing)?.bookmarkId == item.id
-                    // Wrapped in remember(item.id) so the CurioCardActions object is only
-                    // recreated when the item's identity changes, not on every recomposition.
-                    // Lambdas that close over `item` (e.g. onAcceptCategory, onRunAiAnalysis)
-                    // correctly capture the latest value because the key changes whenever item
-                    // changes identity in the list.
-                    val cardActions = remember(item.id) {
+                    // Wrapped in remember(item) so the CurioCardActions object is recreated
+                    // whenever ANY field of item changes (data class equals/hashCode). Using
+                    // only item.id as the key causes stale lambda captures — e.g. onToggleFavorite
+                    // would see the old isFavorite value because the key is never invalidated
+                    // when a field other than id changes.
+                    val cardActions = remember(item) {
                         CurioCardActions(
                             onProcessOcr = { bmp -> viewModel.processOcrForBookmark(item.id, bmp) },
                             onGenerateImagen = { viewModel.generateImagenImage(item.id) },

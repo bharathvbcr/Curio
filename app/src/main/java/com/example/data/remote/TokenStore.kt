@@ -43,6 +43,8 @@ class TokenStore(private val context: Context) {
         private val KEY_NAME = stringPreferencesKey("user_name")
         private val KEY_HF_TOKEN = stringPreferencesKey("hf_token_surface")
         private val KEY_XAI_KEY = stringPreferencesKey("xai_key_surface")
+
+        @Volatile private var debugFallbackKey: javax.crypto.SecretKey? = null
     }
 
     init {
@@ -175,10 +177,10 @@ class TokenStore(private val context: Context) {
      * write operations are serialized internally.
      */
     private fun clearAll() {
-        kotlinx.coroutines.runBlocking { clear() }
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try { clear() } catch (e: Exception) { /* best-effort */ }
+        }
     }
-
-    private var softwareFallbackKey: SecretKey? = null
 
     private fun getOrCreateSecretKey(): SecretKey {
         try {
@@ -205,11 +207,11 @@ class TokenStore(private val context: Context) {
             // AndroidKeyStore provider is absent). In release builds we clear credentials and
             // surface an exception so the caller can handle the failure explicitly.
             if (BuildConfig.DEBUG) {
-                return softwareFallbackKey ?: synchronized(this) {
-                    softwareFallbackKey ?: SecretKeySpec(
+                return debugFallbackKey ?: synchronized(this) {
+                    debugFallbackKey ?: javax.crypto.spec.SecretKeySpec(
                         ByteArray(16) { 0x55.toByte() }, // 128-bit stable fallback test key
                         "AES"
-                    ).also { softwareFallbackKey = it }
+                    ).also { debugFallbackKey = it }
                 }
             } else {
                 clearAll()
