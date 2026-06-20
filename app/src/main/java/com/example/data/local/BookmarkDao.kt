@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -83,6 +84,18 @@ interface BookmarkDao {
 
     @Query("UPDATE bookmarks SET createdAt = :createdAt WHERE id = :id")
     suspend fun updateCreatedAt(id: String, createdAt: Long)
+
+    /**
+     * Atomically swaps the [createdAt] timestamps of two bookmarks so that ordering changes are
+     * never visible as a partial state. Without [@Transaction] the two UPDATEs run in separate
+     * SQLite statements and a concurrent reader could observe the intermediate state where both
+     * items temporarily share the same timestamp (TOCTOU).
+     */
+    @Transaction
+    suspend fun swapCreatedAt(id1: String, ts1: Long, id2: String, ts2: Long) {
+        updateCreatedAt(id1, ts2)
+        updateCreatedAt(id2, ts1)
+    }
 
     /** Every bookmark on the device, across users — only for the device-wide background sweep. */
     @Query("SELECT * FROM bookmarks")

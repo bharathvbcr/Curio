@@ -440,12 +440,12 @@ internal fun BookmarkFeedScreen(
                 // ── Row 4: Space chips — quick-switch the feed between collections ──
                 // Spaces have replaced the old "category" chips; AI categories now seed Spaces, so
                 // this single row is the unified way to scope the feed.
+                val spaceChipsScrollState = rememberScrollState()
                 if (spaces.isNotEmpty()) {
-                    val scrollState = rememberScrollState()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(scrollState),
+                            .horizontalScroll(spaceChipsScrollState),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

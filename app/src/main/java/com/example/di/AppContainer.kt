@@ -169,4 +169,12 @@ class AppContainer(private val context: Context) {
             xBookmarksApi, database.bookmarkDao(), database.spaceDao(), tokenStore, firebaseSyncManager, xAuthApi
         )
     }
+
+    /**
+     * Release resources held by long-lived components. Call from Application.onTerminate() or
+     * a lifecycle owner's onDestroy() to cancel the repository's background mirror scope.
+     */
+    fun close() {
+        (bookmarkRepository as? com.example.data.repo.BookmarkRepositoryImpl)?.close()
+    }
 }

@@ -365,15 +365,32 @@ class BookmarkViewModel(
     private val _analysisState = MutableStateFlow<AnalysisUiState>(AnalysisUiState.Idle)
     val analysisState: StateFlow<AnalysisUiState> = _analysisState.asStateFlow()
 
-    private val _forceLocalNano = MutableStateFlow(!com.example.data.XaiKeyStore.isConfigured())
+    // Initialise to false; the true value is loaded asynchronously in init{} so we never call
+    // XaiKeyStore.isConfigured() synchronously at construction time — TokenStore may not have
+    // finished loading its EncryptedSharedPreferences yet, which would return a stale false.
+    private val _forceLocalNano = MutableStateFlow(true)
     val forceLocalNano: StateFlow<Boolean> = _forceLocalNano.asStateFlow()
 
-    /** Re-evaluates whether a cloud key is available (call after the user saves/clears their key). */
-    fun refreshKeyAvailability() { _forceLocalNano.value = !com.example.data.XaiKeyStore.isConfigured() }
-
-    private val _xaiKeyConfigured = MutableStateFlow(com.example.data.XaiKeyStore.isConfigured())
+    private val _xaiKeyConfigured = MutableStateFlow(false)
     /** Whether a usable xAI key is configured (drives the Settings key card). */
     val xaiKeyConfigured: StateFlow<Boolean> = _xaiKeyConfigured.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val configured = com.example.data.XaiKeyStore.isConfigured()
+            _xaiKeyConfigured.value = configured
+            _forceLocalNano.value = !configured
+        }
+    }
+
+    /** Re-evaluates whether a cloud key is available (call after the user saves/clears their key). */
+    fun refreshKeyAvailability() {
+        viewModelScope.launch {
+            val configured = com.example.data.XaiKeyStore.isConfigured()
+            _xaiKeyConfigured.value = configured
+            _forceLocalNano.value = !configured
+        }
+    }
 
     /**
      * Persists a user-supplied xAI API key (encrypted) and activates it immediately. A blank value
@@ -384,7 +401,7 @@ class BookmarkViewModel(
         viewModelScope.launch {
             tokenStore.saveXaiKey(key.trim())
             com.example.data.XaiKeyStore.setRuntimeKey(key.trim())
-            _xaiKeyConfigured.value = com.example.data.XaiKeyStore.isConfigured()
+            // Refresh both _xaiKeyConfigured and _forceLocalNano together.
             refreshKeyAvailability()
         }
     }
@@ -714,8 +731,8 @@ class BookmarkViewModel(
             val index = list.indexOfFirst { it.id == bookmark.id }
             if (index > 0) {
                 val upper = list[index - 1]
-                repository.updateCreatedAt(bookmark.id, upper.createdAt)
-                repository.updateCreatedAt(upper.id, bookmark.createdAt)
+                // Single @Transaction call: both UPDATEs are atomic — no TOCTOU window.
+                repository.swapCreatedAt(bookmark.id, bookmark.createdAt, upper.id, upper.createdAt)
             }
         }
     }
@@ -726,8 +743,8 @@ class BookmarkViewModel(
             val index = list.indexOfFirst { it.id == bookmark.id }
             if (index != -1 && index < list.size - 1) {
                 val lower = list[index + 1]
-                repository.updateCreatedAt(bookmark.id, lower.createdAt)
-                repository.updateCreatedAt(lower.id, bookmark.createdAt)
+                // Single @Transaction call: both UPDATEs are atomic — no TOCTOU window.
+                repository.swapCreatedAt(bookmark.id, bookmark.createdAt, lower.id, lower.createdAt)
             }
         }
     }

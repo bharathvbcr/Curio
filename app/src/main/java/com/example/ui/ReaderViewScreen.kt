@@ -5,6 +5,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -86,9 +87,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.imePadding
@@ -178,6 +183,7 @@ fun ReaderViewScreen(
         ),
         onDismissRequest = onClose
     ) {
+        androidx.activity.compose.BackHandler { onClose() }
         BookmarkTheme(darkTheme = darkTheme, dynamicColor = dynamicColor) {
             // Slide the reader up from the bottom edge to match the app's card modals.
             var visible by remember { mutableStateOf(false) }
@@ -238,6 +244,11 @@ fun ReaderViewScreen(
                             text = "A-",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier
+                                .semantics {
+                                    role = androidx.compose.ui.semantics.Role.Button
+                                    contentDescription = "Decrease font size"
+                                }
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                 .clickable { fontScale = 0.85f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_out")
@@ -246,6 +257,11 @@ fun ReaderViewScreen(
                             text = "A",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
                             modifier = Modifier
+                                .semantics {
+                                    role = androidx.compose.ui.semantics.Role.Button
+                                    contentDescription = "Reset font size"
+                                }
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                 .clickable { fontScale = 1.0f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_reset")
@@ -254,6 +270,11 @@ fun ReaderViewScreen(
                             text = "A+",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
                             modifier = Modifier
+                                .semantics {
+                                    role = androidx.compose.ui.semantics.Role.Button
+                                    contentDescription = "Increase font size"
+                                }
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                 .clickable { fontScale = 1.25f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_in")

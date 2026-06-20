@@ -156,6 +156,12 @@ class FirebaseSyncManager(private val context: Context) {
                 val id = doc.getString("id") ?: return@mapNotNull null
                 val text = doc.getString("text") ?: return@mapNotNull null
                 val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+                // TODO: last-writer-wins conflict resolution — read cloudUpdatedAt here and
+                //  compare against the local copy's createdAt as a proxy once BookmarkEntity
+                //  gains an `updatedAt` column. For now, the repository merge in
+                //  BookmarkRepositoryImpl prefers the local copy's enriched fields.
+                val cloudUpdatedAtMs: Long? = doc.getTimestamp("updatedAt")?.toDate()?.time
+                Log.v("FirebaseSyncManager", "doc=$id cloudUpdatedAt=$cloudUpdatedAtMs")
                 val title = doc.getString("title")
                 val url = doc.getString("url")
                 val summary = doc.getString("summary")

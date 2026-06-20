@@ -25,6 +25,8 @@ interface BookmarkRepository {
     suspend fun deleteBookmarks(ids: List<String>)
     suspend fun updateCategoryForIds(ids: List<String>, category: String)
     suspend fun updateCreatedAt(id: String, createdAt: Long)
+    /** Atomically swaps the ordering timestamps of two bookmarks inside a single DB transaction. */
+    suspend fun swapCreatedAt(id1: String, ts1: Long, id2: String, ts2: Long)
 
     // Phase 8: source resolution
     suspend fun updateSourceInfo(

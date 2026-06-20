@@ -122,11 +122,14 @@ class OnDeviceEmbeddingProvider(
     override suspend fun embedQuery(query: String): FloatArray? =
         embed(query, EmbedData.TaskType.RETRIEVAL_QUERY)
 
-    private fun ensureModel(): GeckoEmbeddingModel? {
+    private suspend fun ensureModel(): GeckoEmbeddingModel? {
         model?.let { return it }
         if (!availability.isEmbeddingGemmaAvailable()) return null
-        return synchronized(this) {
-            model ?: runCatching {
+        return inferenceLock.withLock {
+            // Double-check: another coroutine may have initialised the model while we waited for
+            // the lock, so skip redundant construction.
+            if (model != null) return@withLock model
+            runCatching {
                 GeckoEmbeddingModel(
                     modelManager.modelFile().absolutePath,
                     Optional.of(modelManager.tokenizerFile().absolutePath),
@@ -159,7 +162,10 @@ class OnDeviceEmbeddingProvider(
 
     /** Releases native resources; call when the model file is deleted. */
     fun release() {
-        synchronized(this) { model = null }
+        // Intentionally non-suspend: the caller (e.g. EmbeddingModelManager.delete) may not be in
+        // a coroutine. Setting the volatile field directly is safe here — the inferenceLock guards
+        // construction, not the null-out on teardown, and a null read in embed() is handled.
+        model = null
     }
 
     companion object { private const val TAG = "OnDeviceEmbedding" }

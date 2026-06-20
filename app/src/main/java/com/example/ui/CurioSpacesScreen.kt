@@ -352,7 +352,7 @@ private fun SmartBadge(color: Color) {
 private fun SpaceIconButton(icon: ImageVector, contentDescription: String, tint: Color, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(36.dp)
+            .size(48.dp)
             .pressBounce(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {

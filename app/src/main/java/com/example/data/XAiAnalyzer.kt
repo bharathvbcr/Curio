@@ -272,7 +272,9 @@ class XAiAnalyzer(
         val tags = if (words.isEmpty()) listOf("curated") else words
 
         return AnalysisResult(
-            summary = "⚡ [Local] ${text.take(80).trim()}",
+            // Do NOT include tweet/bookmark text in the summary — it would leak PII into debug
+            // logs and any UI surface that renders this field.
+            summary = "⚡ [Local analysis]",
             tags = tags,
             category = category,
             entities = null,

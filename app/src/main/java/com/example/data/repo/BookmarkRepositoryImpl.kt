@@ -125,6 +125,10 @@ class BookmarkRepositoryImpl(
                     }
                     val freshIds = freshEntities.map { it.id }
                     val existingMap = dao.getBookmarksByIds(freshIds).associateBy { it.id }
+                    // TODO: simple last-writer-wins using updatedAt — once BookmarkEntity gains
+                    //  an `updatedAt` column, compare it here: if existing.updatedAt > cloud
+                    //  updatedAt, keep the local copy rather than merging the cloud version in.
+                    //  For now we merge unconditionally, preferring non-null local fields.
                     val merged = freshEntities.map { fresh ->
                         val existing = existingMap[fresh.id]
                         if (existing != null) {
@@ -377,6 +381,16 @@ class BookmarkRepositoryImpl(
         mirrorToCloud(id)
         Unit
     }
+
+    override suspend fun swapCreatedAt(id1: String, ts1: Long, id2: String, ts2: Long) =
+        withContext(Dispatchers.IO) {
+            // dao.swapCreatedAt is @Transaction — both UPDATEs run inside one SQLite transaction,
+            // eliminating the TOCTOU window where a concurrent reader sees a partial swap.
+            dao.swapCreatedAt(id1, ts1, id2, ts2)
+            mirrorToCloud(id1)
+            mirrorToCloud(id2)
+            Unit
+        }
 
     // ── Phase 8: Source resolution ─────────────────────────────────────────
 
@@ -731,6 +745,14 @@ class BookmarkRepositoryImpl(
             authorName = authorName, authorUsername = authorUsername,
             imageAltText = imageAltText, spaceId = spaceId, notes = notes
         )
+    }
+
+    /**
+     * Cancels the background mirror scope. Must be called when the repository is no longer
+     * needed (e.g. from AppContainer.close()) to avoid leaking the supervisor coroutine.
+     */
+    fun close() {
+        mirrorScope.cancel()
     }
 
     /** Parsed rule set for this Space row (cheap; tolerant of legacy/blank `rulesJson`). */

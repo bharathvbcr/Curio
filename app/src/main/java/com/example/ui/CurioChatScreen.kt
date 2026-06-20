@@ -176,7 +176,7 @@ internal fun CurioChatScreen(
     val lazyListState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
-    LaunchedEffect(messages.size, isLoading) {
+    LaunchedEffect(messages.size) {
         val target = messages.size - 1 + (if (isLoading) 1 else 0)
         if (target >= 0) runCatching { lazyListState.animateScrollToItem(target) }
     }
