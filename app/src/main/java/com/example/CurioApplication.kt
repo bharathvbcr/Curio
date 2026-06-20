@@ -18,7 +18,6 @@ class CurioApplication : Application(), AppFunctionConfiguration.Provider {
     private val curioFunctions: CurioFunctions by lazy {
         CurioFunctions(
             bookmarkRepository = appContainer.bookmarkRepository,
-            database = appContainer.database,
             tokenStore = appContainer.tokenStore,
         )
     }

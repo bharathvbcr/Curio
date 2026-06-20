@@ -29,7 +29,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.HttpException
 import java.util.concurrent.ConcurrentHashMap
 
-class RateLimitException(val resetTimeSeconds: Int) : Exception("X API Rate limit exceeded.")
+// bug-24: was Int — overflows post-2038 (2^31 = Jan 19 2038). Unix reset timestamps
+// returned by the X API are seconds-since-epoch, so Long is required.
+class RateLimitException(val resetTimeSeconds: Long) : Exception("X API Rate limit exceeded.")
 
 class BookmarkRepositoryImpl(
     private val api: XBookmarksApi,
@@ -82,6 +84,14 @@ class BookmarkRepositoryImpl(
         // non-existent backend can hang indefinitely. Bound it so it can never block
         // the X sync (the cause of "synchronizing loads continuously").
         private const val FIREBASE_TIMEOUT_MS = 15_000L
+        // Prefix for IDs generated for bookmarks added manually (not from the X API).
+        private const val MANUAL_BOOKMARK_PREFIX = "manual_"
+        // Prefix for IDs generated for user-created Spaces.
+        private const val SPACE_ID_PREFIX = "space_"
+        // Delimiter used when serialising/deserialising tag lists to/from a CSV column.
+        private const val TAG_DELIMITER = ","
+        // Maximum characters in the extracted title snippet from URL/text.
+        private const val TITLE_SNIPPET_LIMIT = 50
     }
 
     override fun getBookmarksFlow(userId: String): Flow<List<Bookmark>> =
@@ -90,6 +100,16 @@ class BookmarkRepositoryImpl(
     override suspend fun getBookmarkById(id: String): Bookmark? = withContext(Dispatchers.IO) {
         dao.getBookmarkById(id)?.toDomain()
     }
+
+    override suspend fun searchBookmarks(userId: String, query: String): List<Bookmark> =
+        withContext(Dispatchers.IO) {
+            val entities = if (query.isBlank()) {
+                dao.getBookmarks(userId).first()
+            } else {
+                dao.search(userId, query).first()
+            }
+            entities.map { it.toDomain() }
+        }
 
     override suspend fun syncBookmarks(userId: String, fetchNextPage: Boolean): Result<Unit> =
         withContext(Dispatchers.IO) {
@@ -113,7 +133,7 @@ class BookmarkRepositoryImpl(
                         BookmarkEntity(
                             id = cb.id, text = cb.text, createdAt = cb.createdAt, userId = userId,
                             title = cb.title, url = cb.url, summary = cb.summary,
-                            tags = if (cb.tags.isEmpty()) null else cb.tags.joinToString(","),
+                            tags = if (cb.tags.isEmpty()) null else cb.tags.joinToString(TAG_DELIMITER),
                             category = cb.category, imageUrl = cb.imageUrl, ocrText = cb.ocrText,
                             isOcrScheduled = cb.isOcrScheduled, isAnalyzed = cb.isAnalyzed,
                             sourceType = cb.sourceType?.name, sourceId = cb.sourceId,
@@ -272,11 +292,16 @@ class BookmarkRepositoryImpl(
                 Log.e("BookmarkRepo", "HTTP ${e.code()} on X API")
                 if (e.code() == 429) {
                     val resetHeader = e.response()?.headers()?.get("x-rate-limit-reset")
-                    val resetSecondsVal = resetHeader?.toIntOrNull() ?: 900
-                    val secondsLeft = if (resetSecondsVal > 1_000_000) {
-                        val diff = resetSecondsVal - (System.currentTimeMillis() / 1000).toInt()
-                        if (diff > 0) diff else 900
-                    } else resetSecondsVal
+                    // bug-24: parse as Long — x-rate-limit-reset is a Unix epoch (seconds).
+                    // Interpreting it as Int overflows post-2038 (2^31 = Jan 19 2038).
+                    val resetEpochSeconds = resetHeader?.toLongOrNull() ?: 0L
+                    val secondsLeft: Long = if (resetEpochSeconds > 1_000_000L) {
+                        val resetMs = resetEpochSeconds * 1000L
+                        val delayMs = maxOf(0L, resetMs - System.currentTimeMillis())
+                        // Convert back to seconds for the caller; fall back to 900 s if
+                        // the header is absent or already in the past.
+                        if (delayMs > 0L) delayMs / 1000L else 900L
+                    } else if (resetEpochSeconds > 0L) resetEpochSeconds else 900L
                     return@withContext Result.failure(RateLimitException(secondsLeft))
                 } else {
                     lastError = e
@@ -318,7 +343,7 @@ class BookmarkRepositoryImpl(
     override suspend fun updateAnalysisAndTags(
         id: String, summary: String?, category: String?, tags: List<String>, entities: String?
     ) = withContext(Dispatchers.IO) {
-        val csv = if (tags.isEmpty()) null else tags.joinToString(",")
+        val csv = if (tags.isEmpty()) null else tags.joinToString(TAG_DELIMITER)
         dao.updateAnalysis(id, summary, csv, category, isAnalyzed = true, entities = entities)
         mirrorToCloud(id)
         Unit
@@ -336,7 +361,7 @@ class BookmarkRepositoryImpl(
             try {
                 val urlAndTitle = extractUrlAndTitle(text)
                 val entity = BookmarkEntity(
-                    id = "manual_${java.util.UUID.randomUUID()}",
+                    id = "$MANUAL_BOOKMARK_PREFIX${java.util.UUID.randomUUID()}",
                     text = text, createdAt = System.currentTimeMillis(), userId = userId,
                     title = urlAndTitle.first, url = urlAndTitle.second
                 )
@@ -438,6 +463,9 @@ class BookmarkRepositoryImpl(
     override suspend fun updateEmbedding(id: String, embedding: ByteArray) =
         withContext(Dispatchers.IO) { dao.updateEmbedding(id, embedding) }
 
+    override suspend fun updateEmbeddings(updates: List<Pair<String, ByteArray>>) =
+        withContext(Dispatchers.IO) { dao.updateEmbeddings(updates) }
+
     override suspend fun getBookmarksWithEmbeddings(userId: String): List<Pair<String, ByteArray>> =
         withContext(Dispatchers.IO) {
             dao.getIdsAndEmbeddings(userId).mapNotNull { row ->
@@ -492,7 +520,7 @@ class BookmarkRepositoryImpl(
         description: String, rules: SpaceRules, isPinned: Boolean
     ): Space = withContext(Dispatchers.IO) {
         val entity = SpaceEntity(
-            id = "space_${java.util.UUID.randomUUID()}",
+            id = "$SPACE_ID_PREFIX${java.util.UUID.randomUUID()}",
             userId = userId,
             name = name,
             colorValue = color,
@@ -658,11 +686,16 @@ class BookmarkRepositoryImpl(
 
     /** Milliseconds to wait for a 429, derived from the `x-rate-limit-reset` header. */
     private fun rateLimitWaitMs(e: HttpException): Long {
-        val resetHeader = e.response()?.headers()?.get("x-rate-limit-reset")?.toIntOrNull() ?: return 0L
-        val seconds = if (resetHeader > 1_000_000) {
-            (resetHeader - (System.currentTimeMillis() / 1000).toInt()).coerceAtLeast(0)
-        } else resetHeader
-        return seconds * 1000L
+        // bug-24: parse as Long — the header is a Unix epoch timestamp (seconds since
+        // epoch). Parsing as Int overflows in January 2038 (2^31 seconds).
+        val resetEpochSeconds = e.response()?.headers()?.get("x-rate-limit-reset")
+            ?.toLongOrNull() ?: return 0L
+        return if (resetEpochSeconds > 1_000_000L) {
+            val resetMs = resetEpochSeconds * 1000L
+            maxOf(0L, resetMs - System.currentTimeMillis())
+        } else {
+            resetEpochSeconds * 1000L
+        }
     }
 
     /**
@@ -720,16 +753,16 @@ class BookmarkRepositoryImpl(
         val url = match?.value
         val title = if (url != null) {
             val before = text.substringBefore(url).trim()
-            if (before.isNotEmpty()) before.take(50).let { if (before.length > 50) "$it..." else it }
+            if (before.isNotEmpty()) before.take(TITLE_SNIPPET_LIMIT).let { if (before.length > TITLE_SNIPPET_LIMIT) "$it..." else it }
             else "Curio Saved Link"
         } else {
-            text.take(50).let { if (text.length > 50) "$it..." else it }
+            text.take(TITLE_SNIPPET_LIMIT).let { if (text.length > TITLE_SNIPPET_LIMIT) "$it..." else it }
         }
         return title to url
     }
 
     private fun BookmarkEntity.toDomain(): Bookmark {
-        val tagList = tags?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        val tagList = tags?.split(TAG_DELIMITER)?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         val srcType = sourceType?.let { runCatching { SourceType.valueOf(it) }.getOrNull() }
         return Bookmark(
             id = id, text = text, createdAt = createdAt, userId = userId,

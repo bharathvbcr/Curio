@@ -260,6 +260,7 @@ internal fun SettingsScreen(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val keyConfigured by viewModel.xaiKeyConfigured.collectAsStateWithLifecycle()
+                // Not using rememberSaveable intentionally: key input is transient; saved key is in TokenStore.
                 val keyInput = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
                 Text(
                     text = "xAI API Key",

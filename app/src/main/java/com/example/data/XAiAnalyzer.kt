@@ -75,7 +75,7 @@ class XAiAnalyzer(
         ocrText: String?,
         config: AnalysisConfig,
         sourceAbstract: String? = null
-    ): AnalysisResult = withContext(Dispatchers.Default) {
+    ): AnalysisResult = withContext(Dispatchers.IO) {
         if (config.forceLocal) {
             return@withContext localSimulate(text, ocrText)
         }
@@ -129,7 +129,7 @@ class XAiAnalyzer(
         text: String,
         ocrText: String?,
         sourceAbstract: String? = null
-    ): AnalysisResult = withContext(Dispatchers.Default) {
+    ): AnalysisResult = withContext(Dispatchers.IO) {
         val apiKey = XaiKeyStore.resolve()
         if (!XaiKeyStore.isConfigured()) {
             return@withContext analyzeBookmark(text, ocrText, AnalysisConfig(forceLocal = false), sourceAbstract)
@@ -169,7 +169,7 @@ class XAiAnalyzer(
         text: String,
         ocrText: String?,
         sourceAbstract: String?
-    ): DeepAnalysisResult = withContext(Dispatchers.Default) {
+    ): DeepAnalysisResult = withContext(Dispatchers.IO) {
         val apiKey = XaiKeyStore.resolve()
         if (!XaiKeyStore.isConfigured()) {
             throw Exception("xAI API key required for deep analysis")
@@ -295,7 +295,7 @@ class XAiAnalyzer(
         prompt: String,
         systemInstruction: String = "You are a helpful AI assistant.",
         searchParameters: XAiSearchParameters? = null
-    ): ChatResponse = withContext(Dispatchers.Default) {
+    ): ChatResponse = withContext(Dispatchers.IO) {
         val apiKey = XaiKeyStore.resolve()
         if (!XaiKeyStore.isConfigured()) {
             return@withContext ChatResponse("xAI API key is missing. Add your key in Settings.")
@@ -325,7 +325,7 @@ class XAiAnalyzer(
      * Returns markdown suitable for [com.example.ui.MarkdownText]. Throws when the API key is absent
      * so the caller can surface a clear "key required" state rather than a silent empty digest.
      */
-    suspend fun generateWeeklyDigest(itemsBlock: String, itemCount: Int): String = withContext(Dispatchers.Default) {
+    suspend fun generateWeeklyDigest(itemsBlock: String, itemCount: Int): String = withContext(Dispatchers.IO) {
         val apiKey = XaiKeyStore.resolve()
         if (!XaiKeyStore.isConfigured()) {
             throw Exception("xAI API key required for the weekly digest")

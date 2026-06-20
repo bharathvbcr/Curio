@@ -52,9 +52,12 @@ object EmbeddingIndexScheduler {
             .setBackoffCriteria(BackoffPolicy.LINEAR, 30, TimeUnit.MINUTES)
             .build()
 
+        // KEEP: if the periodic job already exists, leave it unchanged so the OS-managed
+        // interval timer is not reset on every app launch (perf-12). UPDATE would reschedule
+        // on each launch, effectively never firing when launches are frequent.
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC_WORK,
-            ExistingPeriodicWorkPolicy.UPDATE,
+            ExistingPeriodicWorkPolicy.KEEP,
             request
         )
     }

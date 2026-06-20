@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.Flow
 interface BookmarkRepository {
     fun getBookmarksFlow(userId: String): Flow<List<Bookmark>>
     suspend fun getBookmarkById(id: String): Bookmark?
+    /** Searches bookmarks by keyword across text, title, summary, and OCR content for [userId].
+     *  Returns all bookmarks ordered newest-first when [query] is blank. */
+    suspend fun searchBookmarks(userId: String, query: String): List<Bookmark>
     suspend fun syncBookmarks(userId: String, fetchNextPage: Boolean = false): Result<Unit>
     suspend fun clearAll(userId: String)
 
@@ -44,6 +47,8 @@ interface BookmarkRepository {
 
     // Phase 10: embeddings
     suspend fun updateEmbedding(id: String, embedding: ByteArray)
+    /** Bulk-write embeddings in a single SQLite transaction (perf-14). */
+    suspend fun updateEmbeddings(updates: List<Pair<String, ByteArray>>)
     suspend fun getBookmarksWithEmbeddings(userId: String): List<Pair<String, ByteArray>>
     /** Analyzed bookmarks still lacking an embedding — drives the charging-time on-device backfill. */
     suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark>

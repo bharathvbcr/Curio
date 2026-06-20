@@ -5,8 +5,6 @@ import androidx.appfunctions.AppFunctionContext
 import androidx.appfunctions.AppFunctionDeniedException
 import androidx.appfunctions.service.AppFunction
 import com.example.data.export.BibtexExporter
-import com.example.data.local.AppDatabase
-import com.example.data.local.BookmarkEntity
 import com.example.data.remote.TokenStore
 import com.example.domain.model.Bookmark
 import com.example.domain.repo.BookmarkRepository
@@ -35,7 +33,6 @@ import java.time.Instant
  */
 class CurioFunctions(
     private val bookmarkRepository: BookmarkRepository,
-    private val database: AppDatabase,
     private val tokenStore: TokenStore,
 ) {
 
@@ -63,18 +60,6 @@ class CurioFunctions(
             ?: throw AppFunctionDeniedException(
                 "Not signed in. Open the Curio app and sign in with X to use these functions."
             )
-
-    private fun BookmarkEntity.toSummary() = BookmarkSummary(
-        id = id,
-        text = text.take(300),
-        title = title,
-        summary = summary,
-        tags = tags?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
-        category = category,
-        sourceTitle = sourceTitle,
-        isFavorite = isFavorite,
-        createdAt = Instant.ofEpochMilli(createdAt).toString(),
-    )
 
     private fun Bookmark.toSummary() = BookmarkSummary(
         id = id,
@@ -129,13 +114,7 @@ class CurioFunctions(
     ): List<BookmarkSummary> = withContext(Dispatchers.IO) {
         val userId = requireUserId()
         val cap = limit.coerceIn(1, 50)
-        val dao = database.bookmarkDao()
-        val entities = if (query.isBlank()) {
-            dao.getBookmarks(userId).first()
-        } else {
-            dao.search(userId, query).first()
-        }
-        entities
+        bookmarkRepository.searchBookmarks(userId, query)
             .filter { category == null || it.category == category }
             .take(cap)
             .map { it.toSummary() }

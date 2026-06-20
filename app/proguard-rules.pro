@@ -23,8 +23,13 @@
 -keepclassmembers class **$WhenMappings { <fields>; }
 
 # ── Moshi (codegen + kotlin-reflect adapter) ─────────────────────────────────
--keep class com.squareup.moshi.** { *; }
--keep interface com.squareup.moshi.** { *; }
+# Keep only the public API surface R8 cannot infer — narrows from the old blanket
+# "-keep class com.squareup.moshi.** { *; }" that blocked all shrinking (build-16).
+-keep class com.squareup.moshi.JsonAdapter { *; }
+-keep class com.squareup.moshi.JsonReader { *; }
+-keep class com.squareup.moshi.JsonWriter { *; }
+-keep @com.squareup.moshi.JsonClass class * { *; }
+-keepclassmembers class * { @com.squareup.moshi.FromJson *; @com.squareup.moshi.ToJson *; }
 -dontwarn com.squareup.moshi.**
 # Generated JsonAdapters.
 -keep class **JsonAdapter { *; }

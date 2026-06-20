@@ -45,13 +45,18 @@ class EmbeddingIndexWorker(
                 return Result.success()
             }
 
-            var done = 0
+            // Accumulate all (id, bytes) pairs, then flush in a single @Transaction (perf-14).
+            // This amortises SQLite WAL-flush overhead from O(N) to O(1).
+            val updates = mutableListOf<Pair<String, ByteArray>>()
             for (bookmark in pending.take(MAX_PER_RUN)) {
                 if (isStopped) break
                 val vector = onDevice.embedDocument(bookmark) ?: continue
-                container.bookmarkRepository.updateEmbedding(bookmark.id, vector.toByteArray())
-                done++
+                updates += bookmark.id to vector.toByteArray()
             }
+            if (updates.isNotEmpty()) {
+                container.bookmarkRepository.updateEmbeddings(updates)
+            }
+            val done = updates.size
             Log.d(TAG, "On-device indexed $done of ${pending.size} pending bookmarks")
 
             // More than one batch left → ask WorkManager to run us again (still charging-constrained).

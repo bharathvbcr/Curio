@@ -201,18 +201,28 @@ class FirebaseSyncManager(private val context: Context) {
     }
 
     /**
-     * Delete a list of bookmarks from Firestore.
+     * Delete a list of bookmarks from Firestore using WriteBatch (perf-13).
+     *
+     * Previously each document was deleted in its own round-trip inside a loop, costing O(N)
+     * RPCs. WriteBatch coalesces up to 500 deletes per commit, reducing network round-trips to
+     * O(N/500) and cutting Firestore billing units proportionally.
      */
     suspend fun deleteBookmarks(userId: String, ids: List<String>) {
+        if (ids.isEmpty()) return
         ensureAuthenticated()
         val db = firestoreInstance ?: return
-        ids.forEach { id ->
-            try {
-                userBookmarks(db, userId).document(id).delete().awaitTask()
-                Log.d("FirebaseSyncManager", "Deleted bookmark from Firestore: $id")
-            } catch (e: Exception) {
-                Log.e("FirebaseSyncManager", "Failed to delete firestore bookmark $id: ${e.message}")
+        try {
+            ids.chunked(500).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { id ->
+                    val ref = userBookmarks(db, userId).document(id)
+                    batch.delete(ref)
+                }
+                batch.commit().awaitTask()
+                Log.d("FirebaseSyncManager", "Batch-deleted ${chunk.size} bookmarks from Firestore")
             }
+        } catch (e: Exception) {
+            Log.e("FirebaseSyncManager", "Failed to batch-delete bookmarks from Firestore: ${e.message}")
         }
     }
 }

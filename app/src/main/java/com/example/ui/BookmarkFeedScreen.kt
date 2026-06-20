@@ -750,7 +750,7 @@ internal fun BookmarkFeedScreen(
     // Floating bulk operations action bar
     if (selectedIds.isNotEmpty()) {
         val cs = MaterialTheme.colorScheme
-        val allIds = remember(bookmarks) { bookmarks.map { it.id }.toSet() }
+        val allIds by remember(bookmarks) { androidx.compose.runtime.derivedStateOf { bookmarks.map { it.id }.toSet() } }
         val allSelected = allIds.isNotEmpty() && selectedIds.containsAll(allIds)
         var confirmingBulkDelete by remember { mutableStateOf(false) }
         // Reset the delete-confirm arming whenever the selection changes underneath it.

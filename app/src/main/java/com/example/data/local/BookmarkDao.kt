@@ -133,6 +133,28 @@ interface BookmarkDao {
     @Query("UPDATE bookmarks SET embedding = :embedding WHERE id = :id")
     suspend fun updateEmbedding(id: String, embedding: ByteArray?)
 
+    /**
+     * Bulk-write embeddings inside a single SQLite transaction (perf-14).
+     * Amortises per-statement transaction overhead: N individual [updateEmbedding] calls each
+     * open+commit their own transaction, whereas a single [@Transaction] wraps them all in one,
+     * cutting WAL flush overhead from O(N) to O(1).
+     */
+    @Transaction
+    suspend fun updateEmbeddings(updates: List<Pair<String, ByteArray>>) {
+        updates.forEach { (id, vec) -> updateEmbedding(id, vec) }
+    }
+
+    /**
+     * Alternative batch API that takes parallel id and embedding lists (build-16 / Task 4).
+     * Delegates to [updateEmbedding] inside a single [@Transaction] — same O(1) WAL flush
+     * guarantee as [updateEmbeddings]. Callers that collect ids and embeddings as separate
+     * lists (e.g. [EmbeddingIndexWorker]) can use this directly.
+     */
+    @Transaction
+    suspend fun batchUpdateEmbeddings(ids: List<String>, embeddings: List<ByteArray>) {
+        ids.zip(embeddings).forEach { (id, emb) -> updateEmbedding(id, emb) }
+    }
+
     @Query("SELECT id, embedding FROM bookmarks WHERE userId = :userId AND embedding IS NOT NULL")
     suspend fun getIdsAndEmbeddings(userId: String): List<IdEmbeddingRow>
 

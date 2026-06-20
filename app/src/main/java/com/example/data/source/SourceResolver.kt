@@ -105,8 +105,15 @@ class SourceResolver(
     }
 
     private fun extractAllUrls(text: String): List<String> {
-        val regex = Regex("https?://[\\w./%-]+")
-        return regex.findAll(text).map { it.value }.toList()
+        // Matches full URLs including query strings (?k=v) and fragments (#anchor).
+        // Characters excluded from the character class: whitespace, angle brackets, quotes.
+        // Trailing punctuation that is syntactically part of the surrounding sentence
+        // (period, comma, closing paren/bracket, exclamation, semicolon) is stripped after
+        // extraction so that "see https://arxiv.org/abs/2401.00001." works correctly.
+        val regex = Regex("""https?://[^\s<>"']+""")
+        return regex.findAll(text)
+            .map { it.value.trimEnd('.', ',', ')', ']', '!', '?', ';') }
+            .toList()
     }
 
     // ── arXiv ────────────────────────────────────────────────────────────────

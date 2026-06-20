@@ -196,6 +196,16 @@ internal fun CurioPostCard(
     var showNewSpaceForCard by remember { mutableStateOf(false) }
     var showNotesEditor by remember { mutableStateOf(false) }
 
+    // Close any open child dialogs when the card collapses so they don't linger
+    // in a detached state after the expanded section has animated away.
+    LaunchedEffect(isExpanded) {
+        if (!isExpanded) {
+            showNotesEditor = false
+            showSpacePicker = false
+            showNewSpaceForCard = false
+        }
+    }
+
     val isProcessingThisCard = isProcessing
 
     val imageLauncher = rememberLauncherForActivityResult(
@@ -788,6 +798,11 @@ private fun CardOptionsSheet(
 
     val cs = MaterialTheme.colorScheme
 
+    // Cache the BibTeX export so it is not recomputed on every recomposition of the sheet.
+    // exportBibtex() may do non-trivial formatting work; memoising it by bookmark identity is safe
+    // because the sheet is only shown while the bookmark is unchanged.
+    val bibtexText = remember(bookmark.id, bookmark.sourceType) { actions.exportBibtex() }
+
     // Secondary actions laid out as a two-column grid of tiles.
     val tiles = buildList {
         add(CardAction("Copy", Icons.Filled.ContentCopy, cs.onSurface.copy(alpha = 0.7f)) { copyToClipboard(context, shareableText) })
@@ -801,7 +816,7 @@ private fun CardOptionsSheet(
             add(CardAction("Resolve source", Icons.Default.Link, cs.secondary) { actions.onResolveSource() })
         }
         if (bookmark.sourceType == SourceType.ARXIV) {
-            actions.exportBibtex()?.let { bib ->
+            bibtexText?.let { bib ->
                 add(CardAction("BibTeX", Icons.Default.ContentCopy, Color(0xFFE53935)) { copyToClipboard(context, bib, "BibTeX") })
             }
         }

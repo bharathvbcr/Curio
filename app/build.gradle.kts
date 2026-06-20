@@ -57,8 +57,13 @@ android {
 
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
+      val keystorePath = System.getenv("KEYSTORE_PATH")
+      // build-15: Warn loudly when KEYSTORE_PATH is absent so a misconfigured CI pipeline
+      // never silently ships a release APK signed with debug/fallback credentials.
+      if (keystorePath == null && gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
+          logger.warn("WARNING: KEYSTORE_PATH not set — release build will use fallback path or fail at signing")
+      }
+      storeFile = file(keystorePath ?: "${rootDir}/my-upload-key.jks")
       storePassword = System.getenv("STORE_PASSWORD")
       keyAlias = "upload"
       keyPassword = System.getenv("KEY_PASSWORD")
