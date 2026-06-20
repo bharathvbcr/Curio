@@ -83,8 +83,15 @@ internal class SearchController(
 
     fun setMode(mode: SearchMode) {
         _searchMode.value = mode
-        if (mode == SearchMode.KEYWORD) _semanticResults.value = emptyList()
-        else if (_searchQuery.value.isNotBlank()) runSemanticSearch(_searchQuery.value)
+        if (mode == SearchMode.KEYWORD) {
+            semanticSearchJob?.cancel()
+            _semanticResults.value = emptyList()
+        } else if (_searchQuery.value.isNotBlank()) {
+            semanticSearchJob?.cancel()
+            semanticSearchJob = scope.launch {
+                runSemanticSearch(_searchQuery.value)
+            }
+        }
     }
 
     fun clearAll() {
@@ -93,33 +100,30 @@ internal class SearchController(
         _quickFilter.value = QuickFilter.ALL; _selectedSpaceId.value = null
     }
 
-    private fun runSemanticSearch(query: String) {
+    private suspend fun runSemanticSearch(query: String) {
         val uid = currentUserId() ?: return
-        scope.launch {
-            _isSemanticLoading.value = true
-            try {
-                val queryEmbedding = embeddingService.embedQuery(query) ?: run {
-                    _isSemanticLoading.value = false
-                    return@launch
-                }
-                val allEmbeddings = repository.getBookmarksWithEmbeddings(uid)
-                    .map { (id, bytes) -> id to bytes.toFloatArray() }
+        _isSemanticLoading.value = true
+        try {
+            val queryEmbedding = embeddingService.embedQuery(query) ?: return
+            val allEmbeddings = repository.getBookmarksWithEmbeddings(uid)
+                .map { (id, bytes) -> id to bytes.toFloatArray() }
 
-                if (allEmbeddings.isEmpty()) {
-                    _isSemanticLoading.value = false
-                    return@launch
-                }
+            if (allEmbeddings.isEmpty()) return
 
-                val topIds = VectorSearch.topK(queryEmbedding, allEmbeddings, k = 20).toSet()
-                val bookmarkMap = rawBookmarks().associateBy { it.id }
-                _semanticResults.value = topIds.mapNotNull { bookmarkMap[it] }
-            } catch (e: Exception) {
-                Log.w(TAG, "Semantic search failed for query \"$query\"", e)
-                _isSemanticLoading.value = false
-            } finally {
-                _isSemanticLoading.value = false
-            }
+            val topIds = VectorSearch.topK(queryEmbedding, allEmbeddings, k = 20).toSet()
+            val bookmarkMap = rawBookmarks().associateBy { it.id }
+            _semanticResults.value = topIds.mapNotNull { bookmarkMap[it] }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w(TAG, "Semantic search failed for query \"$query\"", e)
+        } finally {
+            _isSemanticLoading.value = false
         }
+    }
+
+    /** Cancels any in-flight search job. Call from [BookmarkViewModel.onCleared]. */
+    fun close() {
+        semanticSearchJob?.cancel()
     }
 
     private companion object {

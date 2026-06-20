@@ -27,8 +27,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.HttpException
-import java.text.SimpleDateFormat
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class RateLimitException(val resetTimeSeconds: Int) : Exception("X API Rate limit exceeded.")
@@ -61,7 +59,10 @@ class BookmarkRepositoryImpl(
         mirrorScope.launch {
             try {
                 dao.getBookmarkById(id)?.let { firebaseSyncManager.pushBookmark(it.userId, it.toDomain()) }
-            } catch (e: Exception) { Log.e("BookmarkRepo", "Cloud mirror failed for $id: ${e.message}") }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.e("BookmarkRepo", "Cloud mirror failed for $id: ${e.message}")
+            }
         }
     }
 
@@ -152,6 +153,7 @@ class BookmarkRepositoryImpl(
                 }
                 firebaseSyncSuccess = true
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Firebase pull error: ${e.message}")
                 lastError = e
             }
@@ -215,8 +217,10 @@ class BookmarkRepositoryImpl(
                                 )
                             }
 
+                            val freshIds = entities.map { it.id }
+                            val existingMap = dao.getBookmarksByIds(freshIds).associateBy { it.id }
                             val merged = entities.map { fresh ->
-                                val existing = dao.getBookmarkById(fresh.id)
+                                val existing = existingMap[fresh.id]
                                 if (existing != null) {
                                     fresh.copy(
                                         title = existing.title ?: fresh.title,
@@ -275,6 +279,7 @@ class BookmarkRepositoryImpl(
                     xSyncError = e
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "X API sync error: ${e.message}")
                 lastError = e
                 xSyncError = e
@@ -287,6 +292,7 @@ class BookmarkRepositoryImpl(
                     firebaseSyncManager.pushBookmarks(userId, local.map { it.toDomain() })
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Firebase push error: ${e.message}")
             }
 
@@ -337,6 +343,7 @@ class BookmarkRepositoryImpl(
                 mirrorToCloud(entity.id)
                 Result.success(domain)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Failed to add bookmark", e)
                 Result.failure(e)
             }
@@ -350,7 +357,10 @@ class BookmarkRepositoryImpl(
         mirrorScope.launch {
             try {
                 entities.forEach { firebaseSyncManager.deleteBookmarks(it.userId, listOf(it.id)) }
-            } catch (e: Exception) { Log.e("BookmarkRepo", "Firebase delete error: ${e.message}") }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.e("BookmarkRepo", "Firebase delete error: ${e.message}")
+            }
         }
         Unit
     }
@@ -385,6 +395,8 @@ class BookmarkRepositoryImpl(
     override suspend fun deduplicateBySource(userId: String) = withContext(Dispatchers.IO) {
         val withSource = dao.getBookmarksWithSourceId(userId)
         val grouped = withSource.groupBy { it.sourceId }
+        // Collect all IDs to delete up front so we can issue a single bulk delete.
+        val allDuplicateIds = mutableListOf<String>()
         grouped.forEach { (sourceId, group) ->
             if (sourceId != null && group.size > 1) {
                 val canonical = group.minByOrNull { it.createdAt } ?: return@forEach
@@ -399,10 +411,12 @@ class BookmarkRepositoryImpl(
                     sourceExtra = canonical.sourceExtra,
                     referenceCount = group.size
                 )
-                dao.deleteBookmarks(duplicateIds)
-                Log.d("BookmarkRepo", "Deduped $sourceId: kept ${canonical.id}, removed $duplicateIds")
+                allDuplicateIds += duplicateIds
+                Log.d("BookmarkRepo", "Deduped $sourceId: kept ${canonical.id}, removing $duplicateIds")
             }
         }
+        // Single bulk delete — one DB operation instead of N separate deletes in the loop.
+        if (allDuplicateIds.isNotEmpty()) dao.deleteBookmarks(allDuplicateIds)
     }
 
     // ── Phase 10: Embeddings ────────────────────────────────────────────────
@@ -528,8 +542,8 @@ class BookmarkRepositoryImpl(
         val rules = space.rules()
         if (!rules.isActive) return@withContext 0
         // Explicit action: file any unfiled bookmark this Space's rules match, ignoring autoFile.
-        val matches = dao.getBookmarksByUserDirect(space.userId)
-            .filter { it.spaceId == null && rules.matches(it.toDomain()) }
+        val matches = dao.getUnfiledBookmarks(space.userId)
+            .filter { rules.matches(it.toDomain()) }
             .map { it.id }
         if (matches.isNotEmpty()) dao.updateSpaceForIds(matches, spaceId)
         matches.size
@@ -539,8 +553,7 @@ class BookmarkRepositoryImpl(
         val smartSpaces = spaceDao.getSpacesDirect(userId).filter { it.rules().autoFile && it.rules().isActive }
         if (smartSpaces.isEmpty()) return@withContext 0
         var filed = 0
-        dao.getBookmarksByUserDirect(userId)
-            .filter { it.spaceId == null }
+        dao.getUnfiledBookmarks(userId)
             .forEach { entity ->
                 val domain = entity.toDomain()
                 // First matching Space wins, matching the single-bookmark fileByRules() ordering.
@@ -598,6 +611,7 @@ class BookmarkRepositoryImpl(
     ): BookmarksPage {
         var token = accessToken
         var attempt = 0
+        var alreadyRefreshed = false
         while (true) {
             try {
                 return BookmarksPage(
@@ -607,6 +621,8 @@ class BookmarkRepositoryImpl(
             } catch (e: HttpException) {
                 when {
                     e.code() == 401 -> {
+                        if (alreadyRefreshed) throw e // give up on second 401
+                        alreadyRefreshed = true
                         // Refresh the access token once, then retry on the new token.
                         token = refreshAccessTokenSafely(token) ?: throw e
                     }
@@ -653,8 +669,13 @@ class BookmarkRepositoryImpl(
 
     private suspend fun refreshAccessToken(): String? {
         val refresh = tokenStore.getRefreshToken()?.takeIf { it.isNotBlank() } ?: return null
+        val clientId = try { BuildConfig.X_CLIENT_ID } catch (e: Exception) { "" }
+            .ifBlank { try { BuildConfig.CLIENT_ID } catch (e: Exception) { "" } }
+        if (clientId.isBlank()) {
+            android.util.Log.e("BookmarkRepo", "No OAuth client ID configured; cannot refresh token")
+            return null
+        }
         return try {
-            val clientId = BuildConfig.CLIENT_ID.takeIf { it.isNotEmpty() } ?: BuildConfig.X_CLIENT_ID
             val resp = authApi.refreshToken(
                 grantType = "refresh_token",
                 clientId = clientId,
@@ -666,6 +687,7 @@ class BookmarkRepositoryImpl(
             Log.d("BookmarkRepo", "X access token refreshed")
             resp.accessToken
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Log.e("BookmarkRepo", "Token refresh failed: ${e.message}")
             null
         }
@@ -673,15 +695,9 @@ class BookmarkRepositoryImpl(
 
     private fun parseRfc3339ToEpoch(iso: String): Long {
         return try {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).parse(iso)?.time
-                ?: System.currentTimeMillis()
+            java.time.Instant.parse(iso).toEpochMilli()
         } catch (e: Exception) {
-            try {
-                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(iso)?.time
-                    ?: System.currentTimeMillis()
-            } catch (ex: Exception) {
-                System.currentTimeMillis()
-            }
+            0L
         }
     }
 

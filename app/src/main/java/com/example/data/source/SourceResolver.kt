@@ -25,23 +25,21 @@ class SourceResolver(
     private val crossrefClient: CrossrefClient
 ) {
 
-    private suspend fun <T> withRetry(maxAttempts: Int = 3, block: suspend () -> T?): T? {
-        var lastException: Exception? = null
+    private suspend fun <T> withRetry(maxAttempts: Int = 3, delayMs: Long = 1000, block: suspend () -> T?): T? {
         repeat(maxAttempts) { attempt ->
             try {
                 return block()
             } catch (e: retrofit2.HttpException) {
                 if (e.code() == 429 || e.code() == 503) {
-                    lastException = e
-                    val retryAfter = e.response()?.headers()?.get("Retry-After")?.toLongOrNull()
-                        ?: (1L shl attempt) // exponential backoff: 1s, 2s, 4s
-                    kotlinx.coroutines.delay(retryAfter * 1000)
-                } else {
-                    throw e
+                    val retryAfterMs = (e.response()?.headers()?.get("Retry-After")?.toLongOrNull() ?: (1L shl attempt)) * 1000L
+                    kotlinx.coroutines.delay(retryAfterMs)
+                } else if (e.code() in 400..499) {
+                    return null  // client errors: don't retry
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                lastException = e
+                if (attempt == maxAttempts - 1) return null
+                kotlinx.coroutines.delay(delayMs * (1L shl attempt))
             }
         }
         return null
@@ -83,7 +81,7 @@ class SourceResolver(
 
     private suspend fun resolveDoi(doi: String): SourceInfo? {
         return try {
-            val meta = crossrefClient.fetchWork(doi) ?: return null
+            val meta = withRetry { crossrefClient.fetchWork(doi) } ?: return null
             // arXiv DOIs (10.48550/arXiv.*) are better served by the arXiv resolver; skip them here.
             if (meta.doi.contains("arxiv", ignoreCase = true)) return null
             val extra = buildExtraJson(mapOf(
@@ -118,7 +116,7 @@ class SourceResolver(
             ?.replace(Regex("v\\d+$"), "") ?: return null
 
         return try {
-            val meta = arxivClient.fetchPaper(id) ?: return null
+            val meta = withRetry { arxivClient.fetchPaper(id) } ?: return null
             val extra = buildExtraJson(mapOf(
                 "published" to meta.published,
                 "categories" to meta.categories
@@ -154,7 +152,7 @@ class SourceResolver(
         if (owner.isBlank() || repo.isBlank()) return null
 
         return try {
-            val r = githubApi.getRepo(owner, repo)
+            val r = withRetry { githubApi.getRepo(owner, repo) } ?: return null
             val extra = buildExtraJson(mapOf(
                 "stars" to r.stars,
                 "language" to r.language,
@@ -195,7 +193,7 @@ class SourceResolver(
 
     private suspend fun resolveHfModel(id: String): SourceInfo? {
         return try {
-            val r = huggingFaceApi.getModel(id)
+            val r = withRetry { huggingFaceApi.getModel(id) } ?: return null
             val modelId = r.modelId ?: r.id ?: id
             val extra = buildExtraJson(mapOf(
                 "downloads" to r.downloads,
@@ -219,7 +217,7 @@ class SourceResolver(
 
     private suspend fun resolveHfDataset(id: String): SourceInfo? {
         return try {
-            val r = huggingFaceApi.getDataset(id)
+            val r = withRetry { huggingFaceApi.getDataset(id) } ?: return null
             val datasetId = r.id ?: id
             val extra = buildExtraJson(mapOf(
                 "downloads" to r.downloads,

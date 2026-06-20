@@ -44,7 +44,16 @@ class EmbeddingModelManager(
     private val _state = MutableStateFlow<State>(if (isReady()) State.Ready else State.Absent)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    fun modelDir(): File = File(context.getExternalFilesDir(null), "models").apply { mkdirs() }
+    fun modelDir(): File {
+        val externalDir = context.getExternalFilesDir(null)
+        val base = if (externalDir != null) {
+            externalDir
+        } else {
+            Log.w(TAG, "External storage unavailable, using internal storage")
+            context.filesDir
+        }
+        return File(base, "models").apply { mkdirs() }
+    }
     fun modelFile(): File = File(modelDir(), MODEL_FILE)
     fun tokenizerFile(): File = File(modelDir(), TOKENIZER_FILE)
 

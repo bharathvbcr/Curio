@@ -40,14 +40,14 @@ class CrossrefClient(
             val response = client.newCall(request).execute()
             response.use {
                 if (!it.isSuccessful) {
-                    Log.w(TAG, "Crossref $clean returned HTTP ${it.code}")
+                    Log.w(TAG, "Crossref HTTP ${it.code} for DOI: ${clean.take(50)} — ${it.body?.string()?.take(200)}")
                     return@withContext null
                 }
                 val body = it.body?.string() ?: return@withContext null
                 parse(body)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Crossref fetch failed for $clean: ${e.message}")
+            Log.w(TAG, "Crossref lookup failed for ${clean}", e)
             null
         }
     }

@@ -26,20 +26,40 @@ class ArxivClient(
     suspend fun fetchPaper(arxivId: String): ArxivMeta? = withContext(Dispatchers.IO) {
         val cleanId = arxivId.replace(Regex("v\\d+$"), "").trim()
         val url = "$baseUrl?id_list=$cleanId&max_results=1"
-        try {
-            val response = client.newCall(Request.Builder().url(url).build()).execute()
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body?.string() ?: return@withContext null
-            parseAtom(body)
-        } catch (e: Exception) {
-            Log.e("ArxivClient", "Failed to fetch $arxivId: ${e.message}")
-            null
+        var lastBody: String? = null
+        repeat(3) { attempt ->
+            try {
+                val response = client.newCall(Request.Builder().url(url).build()).execute()
+                if (response.code == 503) {
+                    Log.w("ArxivClient", "arXiv HTTP 503 for $arxivId (attempt ${attempt + 1})")
+                    response.body?.close()
+                    kotlinx.coroutines.delay(2000L * (attempt + 1))
+                    return@repeat
+                }
+                if (!response.isSuccessful) {
+                    Log.w("ArxivClient", "arXiv HTTP ${response.code} for $arxivId")
+                    return@withContext null
+                }
+                lastBody = response.body?.string()
+                return@withContext lastBody?.let { parseAtom(it) }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.e("ArxivClient", "Failed to fetch $arxivId (attempt ${attempt + 1}): ${e.message}")
+                if (attempt == 2) return@withContext null
+                kotlinx.coroutines.delay(1000L * (attempt + 1))
+            }
         }
+        null
     }
 
     private fun parseAtom(xml: String): ArxivMeta? {
         return try {
             val parser = Xml.newPullParser()
+            try {
+                parser.setFeature("http://xmlpull.org/v1/doc/features.html#process-namespaces", true)
+            } catch (e: Exception) {
+                // not all parsers support this — ignore
+            }
             parser.setInput(xml.reader())
 
             var inEntry = false

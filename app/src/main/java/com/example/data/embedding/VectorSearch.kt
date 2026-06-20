@@ -41,11 +41,16 @@ object VectorSearch {
         k: Int = 15,
         minSimilarity: Float = DEFAULT_MIN_SIMILARITY
     ): List<Pair<String, Float>> {
-        return candidates
-            .map { (id, emb) -> id to cosineSimilarity(query, emb) }
-            .filter { it.second >= minSimilarity }
-            .sortedByDescending { it.second }
-            .take(k)
+        val heap = java.util.PriorityQueue<Pair<String, Float>>(maxOf(k + 1, 1), compareBy { it.second })
+        for ((id, emb) in candidates) {
+            val score = cosineSimilarity(query, emb)
+            if (score < minSimilarity) continue
+            if (heap.size < k || score > (heap.peek()?.second ?: Float.MIN_VALUE)) {
+                heap.offer(Pair(id, score))
+                if (heap.size > k) heap.poll()
+            }
+        }
+        return heap.sortedByDescending { it.second }
     }
 
     fun FloatArray.toByteArray(): ByteArray {

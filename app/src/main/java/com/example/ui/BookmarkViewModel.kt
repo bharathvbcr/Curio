@@ -144,7 +144,10 @@ class BookmarkViewModel(
         .flatMapLatest { uid ->
             if (uid != null) repository.getBookmarksFlow(uid) else flowOf(emptyList())
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        // Eagerly because background jobs (embedAllBookmarks, resolveNewSources, etc.) read
+        // rawBookmarks.value even when there is no UI subscriber — WhileSubscribed would let the
+        // upstream DB flow lapse and those jobs would see a stale empty list.
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Bundle search-mode + semantic results + quick filter + space into one flow so the main combine stays within 5 args
     private data class SearchContext(
@@ -405,7 +408,15 @@ class BookmarkViewModel(
         // categories seed default Spaces for anything still unfiled.
         viewModelScope.launch {
             runCatching { repository.applyRulesToLibrary(userId) }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.e(TAG, "applyRulesToLibrary failed", e)
+                }
             runCatching { repository.backfillCategorySpaces(userId) }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.e(TAG, "backfillCategorySpaces failed", e)
+                }
         }
         syncBookmarks(fetchNextPage = false)
     }
@@ -460,10 +471,21 @@ class BookmarkViewModel(
     fun processOcrForBookmark(bookmarkId: String, bitmap: Bitmap) {
         viewModelScope.launch {
             _analysisState.value = AnalysisUiState.Processing(bookmarkId)
-            repository.updateOcrContent(bookmarkId, ocrText = null, isOcrScheduled = true)
-            val text = ocrAnalyzer.analyze(bitmap)
-            repository.updateOcrContent(bookmarkId, ocrText = text, isOcrScheduled = false)
-            _analysisState.value = AnalysisUiState.Success(bookmarkId)
+            try {
+                repository.updateOcrContent(bookmarkId, ocrText = null, isOcrScheduled = true)
+                val text = ocrAnalyzer.analyze(bitmap)
+                repository.updateOcrContent(bookmarkId, ocrText = text, isOcrScheduled = false)
+                _analysisState.value = AnalysisUiState.Success(bookmarkId)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.e(TAG, "OCR processing failed for bookmark $bookmarkId", e)
+                _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "OCR processing failed")
+            } finally {
+                // Ensure the state is never left in Processing regardless of code path taken.
+                if (_analysisState.value is AnalysisUiState.Processing) {
+                    _analysisState.value = AnalysisUiState.Idle
+                }
+            }
         }
     }
 
@@ -515,6 +537,7 @@ class BookmarkViewModel(
                     generateEmbeddingForBookmark(bookmark.id)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "AI analysis error")
             }
         }
@@ -532,6 +555,7 @@ class BookmarkViewModel(
                 repository.updateDeepSummary(bookmark.id, result.formatted())
                 _analysisState.value = AnalysisUiState.Success(bookmark.id)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "Deep analysis error")
             }
         }
@@ -569,6 +593,7 @@ class BookmarkViewModel(
                 }
                 _analysisState.value = AnalysisUiState.Success(bookmark.id)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "Source resolution failed")
             }
         }
@@ -579,7 +604,9 @@ class BookmarkViewModel(
             val unresolved = rawBookmarks.value.filter { it.sourceType == null && it.url != null }
             unresolved.take(10).forEach { bookmark ->
                 try {
-                    val info = sourceResolver.resolve(bookmark.text, bookmark.url)
+                    val info = withContext(Dispatchers.IO) {
+                        sourceResolver.resolve(bookmark.text, bookmark.url)
+                    }
                     if (info != null) {
                         repository.updateSourceInfo(
                             id = bookmark.id, sourceType = info.sourceType, sourceId = info.sourceId,
@@ -588,6 +615,7 @@ class BookmarkViewModel(
                         )
                     }
                 } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     // Per-bookmark resolution failures are non-fatal — one bad URL shouldn't
                     // abort the batch — but log so a systemic failure (bad key, no network)
                     // is diagnosable instead of vanishing.
@@ -604,6 +632,7 @@ class BookmarkViewModel(
                 repository.deduplicateBySource(uid)
                 _syncState.value = SyncUiState.Success("Deduplication complete")
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _syncState.value = SyncUiState.Error("Dedup failed: ${e.localizedMessage}")
             }
         }
@@ -618,6 +647,7 @@ class BookmarkViewModel(
                 val embedding = embeddingService.embedDocument(bookmark) ?: return@launch
                 repository.updateEmbedding(bookmarkId, embedding.toByteArray())
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.w(TAG, "Embedding generation failed for $bookmarkId", e)
             }
         }
@@ -630,10 +660,13 @@ class BookmarkViewModel(
             var failed = 0
             unembedded.take(50).forEach { bookmark ->
                 try {
-                    val embedding = embeddingService.embedDocument(bookmark) ?: run { failed++; return@forEach }
+                    val embedding = withContext(Dispatchers.IO) {
+                        embeddingService.embedDocument(bookmark)
+                    } ?: run { failed++; return@forEach }
                     repository.updateEmbedding(bookmark.id, embedding.toByteArray())
                     succeeded++
                 } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     failed++
                     Log.w(TAG, "Embedding generation failed for ${bookmark.id}", e)
                 }
@@ -705,6 +738,7 @@ class BookmarkViewModel(
                 val result = textGenerator.analyze(text, null, null, forceLocal = false)
                 onCompleted("✨ Category: ${result.category}\n🏷️ Tags: ${result.tags.joinToString(", ")}\n📝 Summary: ${result.summary}")
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 onCompleted("❌ Analysis failed: ${e.localizedMessage ?: "Unknown error"}. Ensure a valid XAI_API_KEY is set.")
             }
         }
@@ -771,6 +805,7 @@ class BookmarkViewModel(
     override fun onCleared() {
         super.onCleared()
         rateLimitTimer?.cancel()
+        searchController.close()
     }
 
     companion object {
