@@ -51,6 +51,9 @@ internal class SearchController(
     private val _quickFilter = MutableStateFlow(QuickFilter.ALL)
     val quickFilter: StateFlow<QuickFilter> = _quickFilter.asStateFlow()
 
+    private val _libraryFilter = MutableStateFlow(LibraryFilter.ALL)
+    val libraryFilter: StateFlow<LibraryFilter> = _libraryFilter.asStateFlow()
+
     private val _selectedSpaceId = MutableStateFlow<String?>(null)
     val selectedSpaceId: StateFlow<String?> = _selectedSpaceId.asStateFlow()
 
@@ -58,6 +61,10 @@ internal class SearchController(
 
     fun setQuickFilter(filter: QuickFilter) {
         _quickFilter.value = if (_quickFilter.value == filter) QuickFilter.ALL else filter
+    }
+
+    fun setLibraryFilter(filter: LibraryFilter) {
+        _libraryFilter.value = if (_libraryFilter.value == filter) LibraryFilter.ALL else filter
     }
 
     fun selectSpace(spaceId: String?) { _selectedSpaceId.value = spaceId }
@@ -98,6 +105,7 @@ internal class SearchController(
         _searchQuery.value = ""; _selectedCategory.value = null; _selectedTag.value = null
         _semanticResults.value = emptyList(); _searchMode.value = SearchMode.KEYWORD
         _quickFilter.value = QuickFilter.ALL; _selectedSpaceId.value = null
+        _libraryFilter.value = LibraryFilter.ALL
     }
 
     private suspend fun runSemanticSearch(query: String) {

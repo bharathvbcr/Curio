@@ -39,20 +39,21 @@ android {
     val envFile = rootProject.file(".env")
     if (envFile.exists()) envFile.inputStream().use { envProperties.load(it) }
 
-    val xClientId = localProperties.getProperty("X_CLIENT_ID")
-        ?: envProperties.getProperty("CLIENT_ID")
+    // Treat blank and ROTATE_ME/placeholder values as unset — a cleared .env must fall through
+    // to the default, not bake the literal placeholder into the OAuth client_id (X rejects the
+    // authorize request with "you weren't given access to the app").
+    fun secretOrNull(v: String?) =
+        v?.takeIf { it.isNotBlank() && !it.startsWith("ROTATE") && !it.startsWith("MY_") }
+    val xClientId = secretOrNull(localProperties.getProperty("X_CLIENT_ID"))
+        ?: secretOrNull(envProperties.getProperty("CLIENT_ID"))
         ?: "S2l6bVJubWFrTmh1emUxYW45dmM6MTpjaQ"
     val xRedirectUri = localProperties.getProperty("X_REDIRECT_URI") ?: "curio-oauth://callback"
 
-    // Optional Hugging Face token for fetching the (Gemma-license-gated) EmbeddingGemma weights.
-    // Owners can set HF_TOKEN once in local.properties/.env; users can also paste one at runtime.
-    val hfToken = localProperties.getProperty("HF_TOKEN")
-        ?: envProperties.getProperty("HF_TOKEN")
-        ?: ""
-
     buildConfigField("String", "X_CLIENT_ID", "\"$xClientId\"")
     buildConfigField("String", "X_REDIRECT_URI", "\"$xRedirectUri\"")
-    // HF_TOKEN is NOT baked into BuildConfig — users supply it at runtime via SettingsScreen.
+    // BYOK: the Hugging Face token (for the Gemma-license-gated EmbeddingGemma weights) and the
+    // xAI API key are NOT baked into BuildConfig — users supply them at runtime in Settings and
+    // they're stored encrypted on-device via TokenStore.
   }
 
   signingConfigs {
@@ -93,8 +94,8 @@ android {
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
   }
   buildFeatures {
     compose = true
@@ -107,9 +108,10 @@ android {
   }
 }
 
-// Align the Kotlin JVM target with Java 17 (compileOptions above).
+// Align the Kotlin JVM target with Java 21 (compileOptions above). 21 is the floor for
+// Robolectric's Android SDK 36 sandbox — on 17 every Robolectric test fails to even start.
 kotlin {
-  jvmToolchain(17)
+  jvmToolchain(21)
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -140,6 +142,7 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.auth)
   implementation(libs.haze)
   implementation(libs.koin.android)
   implementation(libs.koin.androidx.compose)

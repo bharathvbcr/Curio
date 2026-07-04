@@ -19,6 +19,7 @@ class CurioApplication : Application(), AppFunctionConfiguration.Provider {
         CurioFunctions(
             bookmarkRepository = appContainer.bookmarkRepository,
             tokenStore = appContainer.tokenStore,
+            chronosFlowBridge = appContainer.chronosFlowBridge,
         )
     }
 
@@ -46,11 +47,28 @@ class CurioApplication : Application(), AppFunctionConfiguration.Provider {
         runCatching { com.example.background.EmbeddingIndexScheduler.ensureScheduled(this) }
             .onFailure { android.util.Log.w("CurioApplication", "Embedding index scheduling skipped: ${it.message}") }
 
+        // Register the periodic stale-link sweep (replaces the old foreground BookmarkSweeperService).
+        // Same guard rationale as above: never let a background-scheduling hiccup take down startup.
+        runCatching { com.example.background.BookmarkSweeperScheduler.ensureScheduled(this) }
+            .onFailure { android.util.Log.w("CurioApplication", "Bookmark sweeper scheduling skipped: ${it.message}") }
+
         // Load any user-supplied xAI key (encrypted on disk) into the process-wide resolver, so the
         // app uses the user's own key instead of a build-time key baked into the APK.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching {
-                com.example.data.XaiKeyStore.setRuntimeKey(appContainer.tokenStore.getXaiKey())
+                var storedKey = appContainer.tokenStore.getXaiKey()
+                // Debug-only convenience for personal test builds: when no key has ever been saved,
+                // seed the encrypted store once from .env (BuildConfig.XAI_API_KEY). Release builds
+                // stay strictly BYOK — no key ships in the APK.
+                if (storedKey.isNullOrBlank() && BuildConfig.DEBUG) {
+                    val buildKey = BuildConfig.XAI_API_KEY
+                    if (buildKey.startsWith("xai-")) {
+                        appContainer.tokenStore.saveXaiKey(buildKey)
+                        storedKey = buildKey
+                        android.util.Log.i("CurioApplication", "Seeded xAI key from .env (debug build)")
+                    }
+                }
+                com.example.data.XaiKeyStore.setRuntimeKey(storedKey)
             }.onFailure { android.util.Log.w("CurioApplication", "xAI key load skipped: ${it.message}") }
         }
     }

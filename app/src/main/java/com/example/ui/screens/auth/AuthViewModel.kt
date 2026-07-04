@@ -12,6 +12,7 @@ import com.example.domain.repo.AuthRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -29,6 +30,12 @@ class AuthViewModel(
     // @kotlinx.parcelize.Parcelize and make it implement android.os.Parcelable.
     private var activeChallenge: AuthChallenge? = null
 
+    init {
+        // Backfill the profile photo for sessions that signed in before it was fetched at login.
+        // Best-effort and self-limiting (no-op once cached) — see AuthRepository.refreshProfile.
+        viewModelScope.launch { authRepository.refreshProfile() }
+    }
+
     val authState: StateFlow<AuthState> = authRepository.authState()
         .stateIn(
             scope = viewModelScope,
@@ -36,17 +43,41 @@ class AuthViewModel(
             initialValue = AuthState.SignedOut
         )
 
+    private val _loginError = MutableStateFlow<String?>(null)
+    val loginError: StateFlow<String?> = _loginError.asStateFlow()
+
+    private val _loginSuccessMessage = MutableStateFlow<String?>(null)
+    val loginSuccessMessage: StateFlow<String?> = _loginSuccessMessage.asStateFlow()
+
+    fun clearLoginError() {
+        _loginError.value = null
+    }
+
+    fun reportLoginSuccess() {
+        _loginSuccessMessage.value = "Logged in successfully to X!"
+    }
+
+    fun clearLoginSuccess() {
+        _loginSuccessMessage.value = null
+    }
+
+    fun reportLoginFailure(message: String) {
+        _loginError.value = message
+    }
+
     /**
      * Prepares PKCE parameters and triggers Custom Tabs navigation.
      */
     fun onLoginClick(onLaunchBrowser: (String) -> Unit) {
         viewModelScope.launch {
+            _loginError.value = null
             try {
                 val challenge = loginUseCase.beginLogin()
                 activeChallenge = challenge
                 onLaunchBrowser(challenge.authorizationUrl)
             } catch (e: Exception) {
                 Log.e("AuthVM", "Failed to construct PKCE login redirect URL", e)
+                _loginError.value = "Could not start sign-in. Check your connection and try again."
             }
         }
     }

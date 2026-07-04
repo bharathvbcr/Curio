@@ -71,6 +71,7 @@ object ChatPromptBuilder {
             if (useLibrary) appendLine("Prefer the retrieved library context. Cite paper titles and arXiv IDs when relevant.")
             if (searchParameters != null) appendLine("You also have live $liveLabels search — use it to ground claims and cite sources with markdown links.")
             appendLine("Use markdown (headings, bold, bullets, links). Keep answers concise and formatted for mobile screens.")
+            appendLine("Always respond in English, regardless of the language of the source material or context.")
         }.trimIndent()
 
         return Parts(contextPrompt, systemInstruction, searchParameters)

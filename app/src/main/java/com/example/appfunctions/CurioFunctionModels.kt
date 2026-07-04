@@ -67,3 +67,17 @@ data class BookmarkDetail(
     /** ISO-8601 UTC timestamp of when the bookmark was saved. */
     val createdAt: String,
 )
+
+/**
+ * Outcome of handing a bookmark off to the ChronosFlow productivity app
+ * (reading list, inbox, or task).
+ */
+@AppFunctionSerializable(isDescribedByKDoc = true)
+data class ChronosHandoffResult(
+    /** True when ChronosFlow accepted the item; false when it is not installed or declined it. */
+    val success: Boolean,
+    /** Human-readable outcome, e.g. "Saved to ChronosFlow reading list with a reminder." */
+    val message: String,
+    /** ISO-8601 UTC time the reminder will fire, or null when no reminder was set. */
+    val reminderAt: String?,
+)

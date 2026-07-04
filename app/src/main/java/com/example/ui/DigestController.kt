@@ -48,7 +48,7 @@ internal class DigestController(
                 _digestState.value = DigestUiState.Ready(markdown, recent.size)
             } catch (e: Exception) {
                 Log.w(TAG, "Weekly digest failed", e)
-                _digestState.value = DigestUiState.Error(e.localizedMessage ?: "Digest generation failed")
+                _digestState.value = DigestUiState.Error(humanReadableError(e, ErrorContext.AI))
             }
         }
     }

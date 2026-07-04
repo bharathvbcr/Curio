@@ -26,6 +26,8 @@ interface BookmarkRepository {
     suspend fun updateOcrContent(id: String, ocrText: String?, isOcrScheduled: Boolean)
     suspend fun addBookmark(userId: String, text: String): Result<Bookmark>
     suspend fun deleteBookmarks(ids: List<String>)
+    /** Re-inserts previously-deleted bookmarks verbatim (supports Undo). Embeddings are re-derived later. */
+    suspend fun restoreBookmarks(bookmarks: List<Bookmark>)
     suspend fun updateCategoryForIds(ids: List<String>, category: String)
     suspend fun updateCreatedAt(id: String, createdAt: Long)
     /** Atomically swaps the ordering timestamps of two bookmarks inside a single DB transaction. */
@@ -43,7 +45,8 @@ interface BookmarkRepository {
         referenceCount: Int = 1
     )
     suspend fun incrementReferenceCount(sourceId: String, userId: String)
-    suspend fun deduplicateBySource(userId: String)
+    /** Merges bookmarks sharing a sourceId into one canonical entry. Returns the number removed. */
+    suspend fun deduplicateBySource(userId: String): Int
 
     // Phase 10: embeddings
     suspend fun updateEmbedding(id: String, embedding: ByteArray)
@@ -52,6 +55,8 @@ interface BookmarkRepository {
     suspend fun getBookmarksWithEmbeddings(userId: String): List<Pair<String, ByteArray>>
     /** Analyzed bookmarks still lacking an embedding — drives the charging-time on-device backfill. */
     suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark>
+    /** Every bookmark lacking an embedding, analyzed or not — the "Embed All Bookmarks" work list. */
+    suspend fun getAllUnembedded(userId: String): List<Bookmark>
     /** Drops all stored embeddings (e.g. when switching embedding models / vector dimensions). */
     suspend fun clearAllEmbeddings()
 
@@ -93,21 +98,22 @@ interface BookmarkRepository {
     // Smart Spaces: rule-driven auto-filing
     /**
      * Files [bookmark] into the first auto-file Smart Space whose [SpaceRules] match it, returning
-     * that Space's id (or null when nothing matches). Only considers currently-unfiled bookmarks —
-     * a manual filing is never overridden.
+     * that Space's id (or null when nothing matches). Eligible sources are unfiled bookmarks and
+     * those in AI category Spaces; a manual filing into a user Space is never overridden.
      */
     suspend fun fileByRules(bookmark: Bookmark): String?
 
     /**
-     * Files every unfiled bookmark matching [spaceId]'s rules into it, regardless of the Space's
-     * auto-file toggle (this is the explicit "Apply rules now" action). Returns the number filed.
+     * Files every eligible bookmark matching [spaceId]'s rules into it, regardless of the Space's
+     * auto-file toggle (the explicit "Apply rules now" / save action). Eligible = unfiled or in an
+     * AI category Space. Returns the number filed.
      */
     suspend fun applySpaceRules(spaceId: String): Int
 
     /**
-     * Backfill across all of [userId]'s auto-file Smart Spaces: every unfiled bookmark is filed into
-     * the first Space whose rules match. Idempotent and cheap; safe to call on every login. Returns
-     * the number of bookmarks filed.
+     * Backfill across all of [userId]'s auto-file Smart Spaces: every eligible bookmark is filed
+     * into the best-matching Space. Idempotent and cheap; safe to call on every login. Returns the
+     * number of bookmarks filed.
      */
     suspend fun applyRulesToLibrary(userId: String): Int
 
@@ -125,4 +131,13 @@ interface BookmarkRepository {
      * cheap — only unfiled, categorised items are touched. Safe to call on every login.
      */
     suspend fun backfillCategorySpaces(userId: String)
+
+    /**
+     * Embedding-driven auto-organisation. Compares every unfiled bookmark's vector against each
+     * Space's semantic centroid (the mean of its filed members): high-confidence matches are filed
+     * automatically, cohesive clusters of the remainder become brand-new Spaces, and the
+     * medium-confidence middle is returned as per-card [com.example.domain.model.SpaceSuggestion]s.
+     * A no-op (returns [OrganizeResult.EMPTY]) when nothing is embedded/unfiled.
+     */
+    suspend fun organizeByEmbedding(userId: String): com.example.domain.model.OrganizeResult
 }

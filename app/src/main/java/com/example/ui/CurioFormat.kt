@@ -220,55 +220,18 @@ internal fun formatEpoch(epochMs: Long): String {
     }
 }
 
-// Category palette mapping
-internal fun getCategoryColor(category: String): Color {
-    val clean = category.trim().lowercase()
-    return when (clean) {
-        "work" -> Color(0xFF1E88E5) // Blue
-        "personal" -> Color(0xFF43A047) // Green
-        "reading list", "reading" -> Color(0xFF8E24AA) // Purple
-        "development" -> Color(0xFF4CAF50)
-        "design" -> Color(0xFF00BCD4)
-        "marketing" -> Color(0xFF9C27B0)
-        "crypto" -> Color(0xFFFF9800)
-        "business" -> Color(0xFF3F51B5)
-        "life" -> Color(0xFFE91E63)
-        "tech" -> Color(0xFF009688)
-        "education" -> Color(0xFFFFC107)
-        "finance" -> Color(0xFF3F51B5)
-        "health" -> Color(0xFF00E676)
-        else -> {
-            val hash = clean.hashCode()
-            val colors = listOf(
-                Color(0xFFE040FB), // Magenta
-                Color(0xFFFF5722), // Deep Orange
-                Color(0xFF9C27B0), // Purple
-                Color(0xFF673AB7), // Deep Purple
-                Color(0xFF3F51B5), // Indigo
-                Color(0xFF2196F3), // Blue
-                Color(0xFF03A9F4), // Light Blue
-                Color(0xFF00BCD4), // Cyan
-                Color(0xFF009688), // Teal
-                Color(0xFF4CAF50), // Green
-                Color(0xFFCDDC39), // Lime
-                Color(0xFFFFC107), // Amber
-                Color(0xFFFF9800), // Orange
-                Color(0xFFE91E63)  // Pink
-            )
-            val index = Math.abs(hash) % colors.size
-            colors[index]
-        }
-    }
-}
+// Category palette — aligned with [CategorySpaces] so card accents match suggestion pills.
+internal fun getCategoryColor(category: String): Color =
+    Color(com.example.domain.model.CategorySpaces.forCategory(category).color)
 
-internal fun copyToClipboard(context: android.content.Context, text: String, label: String = "Curio") {
+internal fun copyToClipboard(context: android.content.Context, text: String, label: String = "Curio", notify: Boolean = true) {
     try {
         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         val clip = android.content.ClipData.newPlainText(label, text)
         clipboard.setPrimaryClip(clip)
-        android.widget.Toast.makeText(context, "Copied details to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
+        if (notify) CurioNotifier.notify(context, "Copied to clipboard")
     } catch (e: Exception) {
-        android.widget.Toast.makeText(context, "Failed to copy context", android.widget.Toast.LENGTH_SHORT).show()
+        if (notify) CurioNotifier.notify(context, "Failed to copy")
     }
 }
 
@@ -287,7 +250,7 @@ internal fun tweetUrl(bookmark: Bookmark): String? {
 /** Opens a URL in the device browser, normalising a bare host to https. */
 internal fun openUrl(context: android.content.Context, rawUrl: String?) {
     val url = rawUrl?.trim()?.takeIf { it.isNotEmpty() } ?: run {
-        android.widget.Toast.makeText(context, "No link on this bookmark", android.widget.Toast.LENGTH_SHORT).show()
+        CurioNotifier.notify(context, "No link on this bookmark")
         return
     }
     val normalized = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
@@ -296,19 +259,20 @@ internal fun openUrl(context: android.content.Context, rawUrl: String?) {
             .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
     } catch (e: Exception) {
-        android.widget.Toast.makeText(context, "Couldn't open link", android.widget.Toast.LENGTH_SHORT).show()
+        CurioNotifier.notify(context, "Couldn't open link")
     }
 }
 
-internal fun shareBookmark(context: android.content.Context, text: String) {
+internal fun shareBookmark(context: android.content.Context, text: String, notify: Boolean = true) {
     try {
         val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
             this.type = "text/plain"
             this.putExtra(android.content.Intent.EXTRA_TEXT, text)
         }
         context.startActivity(android.content.Intent.createChooser(intent, "Share Curio Metadata"))
+        if (notify) CurioNotifier.notify(context, "Share sheet opened")
     } catch (e: Exception) {
-        android.widget.Toast.makeText(context, "Failed to share context", android.widget.Toast.LENGTH_SHORT).show()
+        if (notify) CurioNotifier.notify(context, "Failed to share")
     }
 }
 

@@ -43,15 +43,19 @@ class FirebaseSyncManager(private val context: Context) {
         }
     }
 
-    private suspend fun ensureAuthenticated(): Boolean {
+    /**
+     * Ensures an authenticated Firebase session and returns its uid, or null if sign-in failed.
+     * The returned uid is used as the Firestore path key (see [userBookmarks]) so the security
+     * rule `request.auth.uid == {path uid}` is satisfied.
+     */
+    private suspend fun ensureAuthenticated(): String? {
         val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
-        if (auth.currentUser != null) return true
+        auth.currentUser?.let { return it.uid }
         return try {
-            auth.signInAnonymously().awaitTask()
-            true
+            auth.signInAnonymously().awaitTask().user?.uid
         } catch (e: Exception) {
-            Log.w("FirebaseSyncManager", "Anonymous auth failed — Firestore ops may fail", e)
-            false
+            Log.w("FirebaseSyncManager", "Anonymous auth failed — Firestore ops skipped", e)
+            null
         }
     }
 
@@ -68,15 +72,17 @@ class FirebaseSyncManager(private val context: Context) {
     }
 
     /**
-     * Per-user bookmark subcollection. Scoping documents under `users/{userId}/bookmarks/{id}`
-     * lets the Firestore security rules enforce ownership by PATH (request.auth.uid == userId)
-     * instead of trusting a client-supplied `userId` field on a shared top-level collection.
-     * See firestore.rules at the repo root. NOTE: full enforcement still requires Firebase Auth
-     * (a real google-services.json + custom-token/anonymous sign-in) — currently absent, so this
-     * is the structural half of the fix.
+     * Per-user bookmark subcollection, keyed on the Firebase auth uid (NOT the X userId). Scoping
+     * documents under `users/{authUid}/bookmarks/{id}` lets the Firestore security rules enforce
+     * ownership by PATH (`request.auth.uid == {path uid}`) — see firestore.rules at the repo root.
+     *
+     * The X identity still lives in each document's `userId` field (see [buildMinimalMap]) so a
+     * pulled bookmark can be re-associated with the local user. Because the path uses the anonymous
+     * auth uid, sync is per-device: a reinstall mints a new uid and starts a fresh cloud subtree.
+     * Cross-device sync would require a custom token whose uid == X userId (needs a backend).
      */
-    private fun userBookmarks(db: FirebaseFirestore, userId: String) =
-        db.collection("users").document(userId).collection("bookmarks")
+    private fun userBookmarks(db: FirebaseFirestore, authUid: String) =
+        db.collection("users").document(authUid).collection("bookmarks")
 
     /**
      * Converts a Play Services Task into a suspendable coroutine result.
@@ -113,13 +119,13 @@ class FirebaseSyncManager(private val context: Context) {
      * Push or update a single bookmark to Firebase Firestore.
      */
     suspend fun pushBookmark(userId: String, bookmark: Bookmark) {
-        if (!ensureAuthenticated()) {
+        val authUid = ensureAuthenticated() ?: run {
             Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
             return
         }
         val db = firestoreInstance ?: return
         try {
-            userBookmarks(db, userId)
+            userBookmarks(db, authUid)
                 .document(bookmark.id)
                 .set(buildMinimalMap(userId, bookmark), SetOptions.merge())
                 .awaitTask()
@@ -133,12 +139,12 @@ class FirebaseSyncManager(private val context: Context) {
      * Bulk upload bookmark list to Firestore using WriteBatch (max 500 per batch).
      */
     suspend fun pushBookmarks(userId: String, bookmarks: List<Bookmark>) {
-        if (!ensureAuthenticated()) {
+        val authUid = ensureAuthenticated() ?: run {
             Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
             return
         }
         val db = firestoreInstance ?: return
-        val userRef = userBookmarks(db, userId)
+        val userRef = userBookmarks(db, authUid)
         try {
             bookmarks.chunked(500).forEach { chunk ->
                 val batch = db.batch()
@@ -158,13 +164,13 @@ class FirebaseSyncManager(private val context: Context) {
      * Pull all bookmarks associated with a specific user from Firebase Firestore.
      */
     suspend fun pullBookmarks(userId: String): List<Bookmark> {
-        if (!ensureAuthenticated()) {
+        val authUid = ensureAuthenticated() ?: run {
             Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
             return emptyList()
         }
         val db = firestoreInstance ?: return emptyList()
         return try {
-            val querySnapshot = userBookmarks(db, userId)
+            val querySnapshot = userBookmarks(db, authUid)
                 .get()
                 .awaitTask()
 
@@ -223,9 +229,9 @@ class FirebaseSyncManager(private val context: Context) {
      * RPCs. WriteBatch coalesces up to 500 deletes per commit, reducing network round-trips to
      * O(N/500) and cutting Firestore billing units proportionally.
      */
-    suspend fun deleteBookmarks(userId: String, ids: List<String>) {
+    suspend fun deleteBookmarks(ids: List<String>) {
         if (ids.isEmpty()) return
-        if (!ensureAuthenticated()) {
+        val authUid = ensureAuthenticated() ?: run {
             Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
             return
         }
@@ -234,7 +240,7 @@ class FirebaseSyncManager(private val context: Context) {
             ids.chunked(500).forEach { chunk ->
                 val batch = db.batch()
                 chunk.forEach { id ->
-                    val ref = userBookmarks(db, userId).document(id)
+                    val ref = userBookmarks(db, authUid).document(id)
                     batch.delete(ref)
                 }
                 batch.commit().awaitTask()

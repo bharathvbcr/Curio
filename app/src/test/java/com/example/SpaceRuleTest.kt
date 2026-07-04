@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
  * This logic decides which bookmarks get filed into a Space, so correctness matters; it was untested.
  * Robolectric supplies the real org.json used by toJson/fromJson.
  */
-@RunWith(RobolectricTestRunner)
+@RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class SpaceRuleTest {
 
@@ -90,6 +90,20 @@ class SpaceRuleTest {
         assertFalse(draftsOnly.isActive)
         assertFalse(draftsOnly.matches(bm(tags = listOf("anything"))))
         assertFalse(SpaceRules.EMPTY.matches(bm(text = "x")))
+    }
+
+    @Test
+    fun `match score prefers more specific smart space`() {
+        val broad = SpaceRule(RuleField.CATEGORY, RuleOp.EQUALS, "agents")
+        val narrow1 = SpaceRule(RuleField.TAG, RuleOp.EQUALS, "rag")
+        val narrow2 = SpaceRule(RuleField.CATEGORY, RuleOp.EQUALS, "agents")
+        val b = bm(tags = listOf("rag"), category = "agents")
+        val broadRules = SpaceRules(RuleMatch.ANY, true, listOf(broad))
+        val narrowRules = SpaceRules(RuleMatch.ALL, true, listOf(narrow1, narrow2))
+        assertTrue(broadRules.matches(b))
+        assertTrue(narrowRules.matches(b))
+        assertEquals(1, broadRules.matchScore(b))
+        assertEquals(2, narrowRules.matchScore(b))
     }
 
     @Test

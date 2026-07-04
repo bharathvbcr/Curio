@@ -9,6 +9,8 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
@@ -59,12 +61,20 @@ private val LightColorScheme = lightColorScheme(
 )
 
 /**
+ * The app's *resolved* dark/light choice (from the in-app AppThemeSetting), not the raw OS
+ * setting. Glass surfaces read this instead of [isSystemInDarkTheme] so that forcing Light or
+ * Dark in Settings frosts correctly even when it disagrees with the phone's system setting.
+ * Defaults to dark (X-style canvas) until [BookmarkTheme] provides the real value.
+ */
+val LocalCurioDarkTheme = staticCompositionLocalOf { true }
+
+/**
  * Creates an M3 dynamic/static theme with optional seed color styling.
  */
 @Composable
 fun BookmarkTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = true,
+    dynamicColor: Boolean = false,
     brandSeed: Color? = null,
     content: @Composable () -> Unit
 ) {
@@ -94,11 +104,13 @@ fun BookmarkTheme(
         else -> LightColorScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    CompositionLocalProvider(LocalCurioDarkTheme provides darkTheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
+    }
 }
 
 /**
@@ -106,8 +118,8 @@ fun BookmarkTheme(
  */
 @Composable
 fun MyApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     BookmarkTheme(

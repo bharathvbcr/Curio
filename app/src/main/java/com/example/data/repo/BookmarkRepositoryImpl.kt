@@ -1,6 +1,7 @@
 package com.example.data.repo
 
 import android.util.Log
+import com.example.data.embedding.VectorSearch
 import com.example.data.embedding.VectorSearch.toByteArray
 import com.example.data.embedding.VectorSearch.toFloatArray
 import com.example.BuildConfig
@@ -8,6 +9,7 @@ import com.example.data.local.BookmarkDao
 import com.example.data.local.BookmarkEntity
 import com.example.data.local.SpaceDao
 import com.example.data.local.SpaceEntity
+import com.example.domain.model.CategorySpaces
 import com.example.domain.model.Space
 import com.example.domain.model.SpaceRules
 import com.example.data.remote.BookmarksResponse
@@ -18,6 +20,7 @@ import com.example.domain.model.Bookmark
 import com.example.domain.model.SourceType
 import com.example.domain.repo.BookmarkRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -92,6 +95,24 @@ class BookmarkRepositoryImpl(
         private const val TAG_DELIMITER = ","
         // Maximum characters in the extracted title snippet from URL/text.
         private const val TITLE_SNIPPET_LIMIT = 50
+
+        // Appearance rotation for auto-created cluster Spaces: (packed ARGB color, icon key).
+        private val CLUSTER_PALETTE = listOf(
+            0xFF1E88E5L to "hub",
+            0xFF8E24AAL to "workspaces",
+            0xFF43A047L to "folder",
+            0xFFFF9800L to "bolt",
+            0xFF00BCD4L to "star",
+            0xFF673AB7L to "science",
+            0xFFFF5722L to "rocket",
+            0xFF3F51B5L to "label"
+        )
+        // Words too generic to name a Space after when deriving one from bookmark text.
+        private val NAME_STOPWORDS = setOf(
+            "the", "and", "for", "with", "from", "that", "this", "are", "was", "how", "why",
+            "new", "using", "use", "via", "into", "your", "our", "you", "https", "http",
+            "com", "www", "about", "what", "when", "will", "can", "has", "have"
+        )
     }
 
     override fun getBookmarksFlow(userId: String): Flow<List<Bookmark>> =
@@ -378,6 +399,15 @@ class BookmarkRepositoryImpl(
             }
         }
 
+    override suspend fun restoreBookmarks(bookmarks: List<Bookmark>) = withContext(Dispatchers.IO) {
+        if (bookmarks.isEmpty()) return@withContext
+        // REPLACE-conflict upsert re-inserts each row verbatim (embedding is entity-only and
+        // re-derived by the background worker, so it's intentionally dropped here).
+        dao.insertBookmarks(bookmarks.map { it.toEntity() })
+        bookmarks.forEach { mirrorToCloud(it.id) }
+        Unit
+    }
+
     override suspend fun deleteBookmarks(ids: List<String>) = withContext(Dispatchers.IO) {
         val entities = ids.mapNotNull { dao.getBookmarkById(it) }
         dao.deleteBookmarks(ids)
@@ -385,7 +415,7 @@ class BookmarkRepositoryImpl(
         // delete on a slow/unreachable Firestore.
         mirrorScope.launch {
             try {
-                entities.forEach { firebaseSyncManager.deleteBookmarks(it.userId, listOf(it.id)) }
+                entities.forEach { firebaseSyncManager.deleteBookmarks(listOf(it.id)) }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Firebase delete error: ${e.message}")
@@ -431,7 +461,7 @@ class BookmarkRepositoryImpl(
     override suspend fun incrementReferenceCount(sourceId: String, userId: String) =
         withContext(Dispatchers.IO) { dao.incrementReferenceCount(sourceId, userId) }
 
-    override suspend fun deduplicateBySource(userId: String) = withContext(Dispatchers.IO) {
+    override suspend fun deduplicateBySource(userId: String): Int = withContext(Dispatchers.IO) {
         val withSource = dao.getBookmarksWithSourceId(userId)
         val grouped = withSource.groupBy { it.sourceId }
         // Collect all IDs to delete up front so we can issue a single bulk delete.
@@ -456,6 +486,7 @@ class BookmarkRepositoryImpl(
         }
         // Single bulk delete — one DB operation instead of N separate deletes in the loop.
         if (allDuplicateIds.isNotEmpty()) dao.deleteBookmarks(allDuplicateIds)
+        allDuplicateIds.size
     }
 
     // ── Phase 10: Embeddings ────────────────────────────────────────────────
@@ -476,6 +507,9 @@ class BookmarkRepositoryImpl(
 
     override suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark> =
         withContext(Dispatchers.IO) { dao.getUnembedded(userId).map { it.toDomain() } }
+
+    override suspend fun getAllUnembedded(userId: String): List<Bookmark> =
+        withContext(Dispatchers.IO) { dao.getAllUnembedded(userId).map { it.toDomain() } }
 
     override suspend fun clearAllEmbeddings() =
         withContext(Dispatchers.IO) { dao.clearAllEmbeddings() }
@@ -570,10 +604,11 @@ class BookmarkRepositoryImpl(
     // ── Smart Spaces: rule-driven auto-filing ────────────────────────────────
 
     override suspend fun fileByRules(bookmark: Bookmark): String? = withContext(Dispatchers.IO) {
-        // Never override an existing (manual or prior) filing.
-        if (bookmark.spaceId != null) return@withContext null
+        // Never override a manual filing; AI category Spaces are fair game for Smart-Space rules.
+        if (!CategorySpaces.bookmarkEligibleForRuleFiling(bookmark.spaceId)) return@withContext null
         val match = spaceDao.getSpacesDirect(bookmark.userId)
-            .firstOrNull { it.rules().autoFile && it.rules().matches(bookmark) }
+            .filter { it.rules().autoFile && it.rules().matches(bookmark) }
+            .maxByOrNull { it.rules().matchScore(bookmark) }
             ?: return@withContext null
         dao.updateSpaceForIds(listOf(bookmark.id), match.id)
         match.id
@@ -583,9 +618,10 @@ class BookmarkRepositoryImpl(
         val space = spaceDao.getSpaceById(spaceId) ?: return@withContext 0
         val rules = space.rules()
         if (!rules.isActive) return@withContext 0
-        // Explicit action: file any unfiled bookmark this Space's rules match, ignoring autoFile.
-        val matches = dao.getUnfiledBookmarks(space.userId)
-            .filter { rules.matches(it.toDomain()) }
+        // Explicit action: file eligible bookmarks this Space's rules match, ignoring autoFile.
+        // Eligible = unfiled or in an AI category Space — not bookmarks the user filed manually.
+        val matches = ruleFilingCandidates(space.userId)
+            .filter { rules.matches(it) }
             .map { it.id }
         if (matches.isNotEmpty()) dao.updateSpaceForIds(matches, spaceId)
         matches.size
@@ -595,23 +631,31 @@ class BookmarkRepositoryImpl(
         val smartSpaces = spaceDao.getSpacesDirect(userId).filter { it.rules().autoFile && it.rules().isActive }
         if (smartSpaces.isEmpty()) return@withContext 0
         var filed = 0
-        dao.getUnfiledBookmarks(userId)
-            .forEach { entity ->
-                val domain = entity.toDomain()
+        ruleFilingCandidates(userId)
+            .forEach { domain ->
                 // First matching Space wins, matching the single-bookmark fileByRules() ordering.
-                val target = smartSpaces.firstOrNull { it.rules().matches(domain) } ?: return@forEach
-                dao.updateSpaceForIds(listOf(entity.id), target.id)
+                val target = smartSpaces
+                    .filter { it.rules().matches(domain) }
+                    .maxByOrNull { it.rules().matchScore(domain) }
+                    ?: return@forEach
+                dao.updateSpaceForIds(listOf(domain.id), target.id)
                 filed++
             }
         filed
     }
+
+    /** Unfiled bookmarks plus those in AI category Spaces — eligible for Smart-Space rule filing. */
+    private suspend fun ruleFilingCandidates(userId: String): List<Bookmark> =
+        dao.getBookmarksByUserDirect(userId)
+            .map { it.toDomain() }
+            .filter { CategorySpaces.bookmarkEligibleForRuleFiling(it.spaceId) }
 
     override suspend fun ensureCategorySpace(userId: String, category: String): String? =
         withContext(Dispatchers.IO) {
             val key = category.trim().lowercase()
             if (key.isEmpty()) return@withContext null
             // Deterministic id so re-analysis is idempotent and never spawns duplicates.
-            val id = "space_cat_${userId}_$key"
+            val id = "${CategorySpaces.SPACE_ID_PREFIX}${userId}_$key"
             if (spaceDao.getSpaceById(id) == null) {
                 val meta = com.example.domain.model.CategorySpaces.forCategory(key)
                 spaceDao.upsertSpace(
@@ -627,13 +671,109 @@ class BookmarkRepositoryImpl(
 
     override suspend fun backfillCategorySpaces(userId: String) = withContext(Dispatchers.IO) {
         val unfiledByCategory = dao.getBookmarksByUserDirect(userId)
-            .filter { it.spaceId == null && !it.category.isNullOrBlank() }
+            .filter { it.spaceId.isNullOrBlank() && !it.category.isNullOrBlank() }
             .groupBy { it.category!!.trim().lowercase() }
         unfiledByCategory.forEach { (category, items) ->
             val spaceId = ensureCategorySpace(userId, category) ?: return@forEach
             dao.updateSpaceForIds(items.map { it.id }, spaceId)
         }
         Unit
+    }
+
+    // ── Semantic auto-organisation (embedding-driven) ────────────────────────
+
+    override suspend fun organizeByEmbedding(userId: String): com.example.domain.model.OrganizeResult =
+        withContext(Dispatchers.IO) {
+            // A float vector needs ≥4 bytes; skip corrupt or zero-norm blobs (can't match or cluster).
+            val rows = dao.getSpaceEmbeddings(userId).mapNotNull { row ->
+                val emb = row.embedding?.toOrganizerEmbedding() ?: return@mapNotNull null
+                Triple(row.id, row.spaceId?.takeIf { it.isNotBlank() }, emb)
+            }
+            val unfiled = rows.filter { it.second == null }.map { it.first to it.third }
+            if (unfiled.isEmpty()) return@withContext com.example.domain.model.OrganizeResult.EMPTY
+
+            // Each Space's semantic centroid = mean of its filed members' vectors.
+            val filedBySpace = rows.filter { it.second != null }.groupBy { it.second!! }
+            val centroids = filedBySpace.mapNotNull { (spaceId, members) ->
+                com.example.data.embedding.SemanticOrganizer.meanVector(members.map { it.third })
+                    ?.let { spaceId to it }
+            }.toMap()
+            val memberCounts = filedBySpace.mapValues { it.value.size }
+
+            val plan = com.example.data.embedding.SemanticOrganizer.buildPlan(
+                unfiled, centroids, memberCounts
+            )
+
+            // 1. Auto-file high-confidence matches — one UPDATE per target Space.
+            var autoFiled = 0
+            plan.autoFile.groupBy { it.spaceId }.forEach { (spaceId, items) ->
+                dao.updateSpaceForIds(items.map { it.bookmarkId }, spaceId)
+                autoFiled += items.size
+            }
+
+            // 2. Spin up a new Space for each discovered cluster, named from its members' content.
+            var newSpaces = 0
+            val takenNames = spaceDao.getSpacesDirect(userId).map { it.name.lowercase() }.toMutableSet()
+            plan.clusters.forEachIndexed { index, cluster ->
+                val members = dao.getBookmarksByIds(cluster.bookmarkIds).map { it.toDomain() }
+                val name = deriveClusterName(members, takenNames, index)
+                takenNames += name.lowercase()
+                val (color, icon) = CLUSTER_PALETTE[index % CLUSTER_PALETTE.size]
+                val space = createSpace(
+                    userId, name, color, icon,
+                    description = "Auto-created from similar bookmarks",
+                    rules = SpaceRules.EMPTY, isPinned = false
+                )
+                dao.updateSpaceForIds(cluster.bookmarkIds, space.id)
+                newSpaces++
+            }
+
+            // 3. Resolve Space names for the medium-confidence suggestions the UI will surface.
+            val nameById = spaceDao.getSpacesDirect(userId).associate { it.id to it.name }
+            val suggestions = plan.suggestions.mapNotNull { a ->
+                val nm = nameById[a.spaceId] ?: return@mapNotNull null
+                com.example.domain.model.SpaceSuggestion(a.bookmarkId, a.spaceId, nm, a.score)
+            }
+            com.example.domain.model.OrganizeResult(autoFiled, newSpaces, suggestions)
+        }
+
+    /** Names a new cluster Space: most-common tag → most-common significant keyword → "Group N". */
+    private fun deriveClusterName(
+        members: List<Bookmark>,
+        taken: Set<String>,
+        index: Int
+    ): String {
+        val topTag = members.flatMap { it.tags }
+            .map { it.trim() }.filter { it.length > 2 }
+            .groupingBy { it.lowercase() }.eachCount()
+            .maxByOrNull { it.value }?.key
+        val base = topTag?.replaceFirstChar { it.uppercase() }
+            ?: topKeyword(members)
+            ?: "Group ${index + 1}"
+        var name = base
+        var n = 2
+        while (taken.contains(name.lowercase())) { name = "$base $n"; n++ }
+        return name
+    }
+
+    private fun topKeyword(members: List<Bookmark>): String? =
+        members.flatMap { b ->
+            listOfNotNull(b.title, b.sourceTitle, b.summary, b.text)
+                .joinToString(" ")
+                .split(Regex("[^A-Za-z]+"))
+        }
+            .map { it.lowercase() }
+            .filter { it.length > 3 && it !in NAME_STOPWORDS }
+            .groupingBy { it }.eachCount()
+            .maxByOrNull { it.value }?.key
+            ?.replaceFirstChar { it.uppercase() }
+
+    /** Parses an embedding blob for auto-organisation; null when corrupt or zero-norm. */
+    private fun ByteArray.toOrganizerEmbedding(): FloatArray? {
+        if (size < 4) return null
+        val emb = toFloatArray()
+        if (emb.isEmpty() || VectorSearch.normalizeL2(emb) == null) return null
+        return emb
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -716,8 +856,9 @@ class BookmarkRepositoryImpl(
 
     private suspend fun refreshAccessToken(): String? {
         val refresh = tokenStore.getRefreshToken()?.takeIf { it.isNotBlank() } ?: return null
-        val clientId = try { BuildConfig.X_CLIENT_ID } catch (e: Exception) { "" }
-            .ifBlank { try { BuildConfig.CLIENT_ID } catch (e: Exception) { "" } }
+        // Resolve through TokenStore so the refresh always uses the SAME client id that login
+        // used (user BYOK id first) — a mismatched client_id makes X reject the refresh with 401.
+        val clientId = tokenStore.resolveXClientId()
         if (clientId.isBlank()) {
             android.util.Log.e("BookmarkRepo", "No OAuth client ID configured; cannot refresh token")
             return null
@@ -776,9 +917,27 @@ class BookmarkRepositoryImpl(
             isDeepAnalyzed = isDeepAnalyzed, deepSummary = deepSummary,
             isFavorite = isFavorite, isSavedForLater = isSavedForLater,
             authorName = authorName, authorUsername = authorUsername,
-            imageAltText = imageAltText, spaceId = spaceId, notes = notes
+            imageAltText = imageAltText, spaceId = spaceId?.takeIf { it.isNotBlank() }, notes = notes
         )
     }
+
+    /** Inverse of [toDomain] — used by [restoreBookmarks] to re-insert a full row after an Undo. */
+    private fun Bookmark.toEntity(): BookmarkEntity = BookmarkEntity(
+        id = id, text = text, createdAt = createdAt, userId = userId,
+        title = title, url = url, summary = summary,
+        tags = tags.takeIf { it.isNotEmpty() }?.joinToString(TAG_DELIMITER),
+        category = category, imageUrl = imageUrl, ocrText = ocrText,
+        isOcrScheduled = isOcrScheduled, isAnalyzed = isAnalyzed,
+        sourceType = sourceType?.name, sourceId = sourceId,
+        sourceTitle = sourceTitle, sourceAuthors = sourceAuthors,
+        sourceAbstract = sourceAbstract, sourceExtra = sourceExtra,
+        referenceCount = referenceCount, entities = entities,
+        isDeepAnalyzed = isDeepAnalyzed, deepSummary = deepSummary,
+        embedding = null,
+        isFavorite = isFavorite, isSavedForLater = isSavedForLater,
+        authorName = authorName, authorUsername = authorUsername,
+        imageAltText = imageAltText, spaceId = spaceId, notes = notes
+    )
 
     /**
      * Cancels the background mirror scope. Must be called when the repository is no longer

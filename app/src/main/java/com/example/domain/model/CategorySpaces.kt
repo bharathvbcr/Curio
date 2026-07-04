@@ -14,6 +14,20 @@ data class CategorySpaceMeta(val name: String, val color: Long, val icon: String
  * surfacing in the UI. Custom/unknown categories fall back to a title-cased generic Space.
  */
 object CategorySpaces {
+    /** Prefix for auto-created category Spaces (`space_cat_{userId}_{category}`). */
+    const val SPACE_ID_PREFIX = "space_cat_"
+
+    /** True when [spaceId] points at an AI-seeded category Space (not a user Smart/manual Space). */
+    fun isCategorySpaceId(spaceId: String?): Boolean =
+        !spaceId.isNullOrBlank() && spaceId.startsWith(SPACE_ID_PREFIX)
+
+    /**
+     * Bookmarks Smart-Space rules may file: still unfiled, or sitting in an AI category Space.
+     * User-assigned Spaces (manual or prior rule filing into a custom Space) are never overridden.
+     */
+    fun bookmarkEligibleForRuleFiling(spaceId: String?): Boolean =
+        spaceId.isNullOrBlank() || isCategorySpaceId(spaceId)
+
     val DEFAULTS: Map<String, CategorySpaceMeta> = mapOf(
         "architectures" to CategorySpaceMeta("Architectures", 0xFF1E88E5, "hub"),
         "training" to CategorySpaceMeta("Training", 0xFFFF9800, "bolt"),

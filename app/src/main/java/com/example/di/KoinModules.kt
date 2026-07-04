@@ -31,6 +31,9 @@ fun appModule(container: AppContainer) = module {
     single { container.sourceResolver }
     single { container.textGenerator }
     single { container.tokenStore }
+    single { container.chronosFlowBridge }
+    single { container.curioActivityController }
+    single { container.reminderScheduler }
 
     viewModel {
         BookmarkViewModel(
@@ -42,7 +45,10 @@ fun appModule(container: AppContainer) = module {
             get<TextGeneratorSelector>(),
             get<com.example.data.GrokImageService>(),
             get<com.example.data.embedding.EmbeddingModelManager>(),
-            get<com.example.data.remote.TokenStore>()
+            get<com.example.data.remote.TokenStore>(),
+            get<com.example.interop.ChronosFlowBridge>(),
+            get<com.example.notifications.CurioActivityController>(),
+            get<com.example.notifications.ReminderScheduler>()
         )
     }
     viewModel { AuthViewModel(get<LoginUseCase>(), get<AuthRepository>()) }

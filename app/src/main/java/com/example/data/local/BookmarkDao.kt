@@ -158,9 +158,28 @@ interface BookmarkDao {
     @Query("SELECT id, embedding FROM bookmarks WHERE userId = :userId AND embedding IS NOT NULL")
     suspend fun getIdsAndEmbeddings(userId: String): List<IdEmbeddingRow>
 
+    /**
+     * id + Space membership + embedding for every embedded bookmark — the input to the
+     * embedding-driven auto-organiser ([com.example.data.embedding.SemanticOrganizer]). A null
+     * [SpaceEmbeddingRow.spaceId] marks an unfiled card (an organisation candidate); non-null rows
+     * define each Space's semantic centroid.
+     */
+    @Query("SELECT id, spaceId, embedding FROM bookmarks WHERE userId = :userId AND embedding IS NOT NULL")
+    suspend fun getSpaceEmbeddings(userId: String): List<SpaceEmbeddingRow>
+
     /** Analyzed bookmarks that still lack an embedding — the charging-time backfill work list. */
     @Query("SELECT * FROM bookmarks WHERE isAnalyzed = 1 AND embedding IS NULL AND userId = :userId LIMIT 200")
     suspend fun getUnembedded(userId: String): List<BookmarkEntity>
+
+    /**
+     * Every bookmark that still lacks an embedding, regardless of analysis state — the work list for
+     * the user-initiated "Embed All Bookmarks" action. Unlike [getUnembedded], this is not restricted
+     * to analyzed items (embedding falls back to the raw text) and is uncapped so a single tap embeds
+     * the whole library rather than an arbitrary first-N window. Ordered newest-first for stable,
+     * user-meaningful progress.
+     */
+    @Query("SELECT * FROM bookmarks WHERE embedding IS NULL AND userId = :userId ORDER BY createdAt DESC")
+    suspend fun getAllUnembedded(userId: String): List<BookmarkEntity>
 
     @Query("SELECT * FROM bookmarks WHERE id IN (:ids)")
     suspend fun getBookmarksByIds(ids: List<String>): List<BookmarkEntity>
@@ -186,3 +205,5 @@ interface BookmarkDao {
 }
 
 data class IdEmbeddingRow(val id: String, val embedding: ByteArray?)
+
+data class SpaceEmbeddingRow(val id: String, val spaceId: String?, val embedding: ByteArray?)

@@ -77,12 +77,19 @@ data class SpaceRules(
     val isActive: Boolean get() = effective.isNotEmpty()
 
     /** Whether [b] should be filed here. Always false for an empty/inactive rule set. */
-    fun matches(b: Bookmark): Boolean {
+    fun matches(b: Bookmark): Boolean = matchScore(b) > 0
+
+    /**
+     * How many rules matched [b]; 0 when the set doesn't match. Used to pick the best Smart Space
+     * when several qualify (more matching rules = more specific intent).
+     */
+    fun matchScore(b: Bookmark): Int {
         val active = effective
-        if (active.isEmpty()) return false
+        if (active.isEmpty()) return 0
+        val hits = active.count { it.matches(b) }
         return when (match) {
-            RuleMatch.ANY -> active.any { it.matches(b) }
-            RuleMatch.ALL -> active.all { it.matches(b) }
+            RuleMatch.ANY -> if (hits > 0) hits else 0
+            RuleMatch.ALL -> if (hits == active.size) active.size else 0
         }
     }
 

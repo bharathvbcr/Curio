@@ -12,7 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** Citation-export tests. Robolectric supplies a real org.json used by the exporter. */
-@RunWith(RobolectricTestRunner)
+@RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class BibtexExporterTest {
 
@@ -68,7 +68,9 @@ class BibtexExporterTest {
 
     @Test
     fun `csl json carries split author names and doi`() {
-        val csl = BibtexExporter.toCslJson(doi())!!
+        // Android's org.json (used at runtime and under Robolectric) escapes '/' as '\/' —
+        // valid JSON that Zotero/pandoc accept fine; normalize so assertions read naturally.
+        val csl = BibtexExporter.toCslJson(doi())!!.replace("\\/", "/")
         assertTrue(csl.contains("\"family\": \"Jumper\""))
         assertTrue(csl.contains("\"given\": \"John\""))
         assertTrue(csl.contains("\"DOI\": \"10.1038/s41586-021-03819-2\""))

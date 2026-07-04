@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
  * the arXiv Atom parser and Crossref JSON parser are tested end-to-end without hitting the network.
  * Robolectric supplies android.util.Xml (arXiv) and android.util.Log.
  */
-@RunWith(RobolectricTestRunner)
+@RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class SourceClientTest {
 

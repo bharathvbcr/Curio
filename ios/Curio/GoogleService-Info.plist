@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  GoogleService-Info.plist — Firebase config for the Curio iOS app (bundle id com.curio.app).
+
+  This is a CHECKED-IN PLACEHOLDER so local builds do not crash at
+  `FirebaseApp.configure()` (CurioApp.init, App/CurioApp.swift). It carries the
+  structure Firebase expects but NOT real project credentials.
+
+  To use real Firebase (see docs/DEPENDENCIES.md "GoogleService-Info.plist setup"):
+    1. Firebase console → add an iOS app with bundle id `com.curio.app`.
+    2. Download the real GoogleService-Info.plist.
+    3. Replace this file at ios/Curio/GoogleService-Info.plist (picked up by the
+       Curio target's `path: Curio` source glob and copied into the app bundle).
+
+  CI may inject the real file over this placeholder. Do not commit real restricted
+  keys — keep this template (or .gitignore the real copy) per your security policy.
+-->
+<plist version="1.0">
+<dict>
+	<key>API_KEY</key>
+	<string>REPLACE_WITH_FIREBASE_API_KEY</string>
+	<key>GCM_SENDER_ID</key>
+	<string>000000000000</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.curio.app</string>
+	<key>PROJECT_ID</key>
+	<string>curio-placeholder</string>
+	<key>STORAGE_BUCKET</key>
+	<string>curio-placeholder.appspot.com</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:000000000000:ios:0000000000000000000000</string>
+</dict>
+</plist>

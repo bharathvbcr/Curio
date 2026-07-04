@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,6 +40,10 @@ import com.example.domain.model.AuthState
 import com.example.ui.components.CurioLogoMark
 import com.example.ui.theme.GlassTier
 import com.example.ui.theme.glassSurface
+import com.example.ui.theme.pressBounce
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 
 /**
  * High-fidelity, liquid-glass Login Screen supporting OAuth with PKCE.
@@ -48,6 +53,8 @@ fun LoginScreen(
     state: AuthState,
     tier: GlassTier,
     onLoginClick: () -> Unit,
+    errorMessage: String? = null,
+    onDismissError: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -138,6 +145,37 @@ fun LoginScreen(
                         textAlign = TextAlign.Center
                     )
 
+                    if (errorMessage != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .glassSurface(
+                                    tier = tier,
+                                    shape = RoundedCornerShape(12.dp),
+                                    tint = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                                    borderColor = MaterialTheme.colorScheme.error.copy(alpha = 0.3f)
+                                )
+                                .clickable { onDismissError() }
+                                .padding(12.dp)
+                                .testTag("login_error_banner"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
                     val isSigningIn = state is AuthState.SigningIn
 
                     Box(
@@ -155,7 +193,12 @@ fun LoginScreen(
                                 borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
                             )
                             .clip(RoundedCornerShape(16.dp))
-                            .clickable(enabled = !isSigningIn) { onLoginClick() }
+                            // Give the primary action a single, clear TalkBack label + disabled state.
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = if (isSigningIn) "Signing in to X" else "Connect with X"
+                                if (isSigningIn) disabled()
+                            }
+                            .pressBounce(enabled = !isSigningIn) { onLoginClick() }
                             .testTag("connect_x_button"),
                         contentAlignment = Alignment.Center
                     ) {

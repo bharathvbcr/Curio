@@ -57,12 +57,15 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.IconButton
@@ -77,6 +80,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -108,6 +112,11 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.AutoAwesome
 import android.content.Intent
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import kotlin.math.roundToInt
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import kotlinx.coroutines.launch
 import com.example.MainActivity
 import com.example.domain.model.AuthState
@@ -122,6 +131,11 @@ import com.example.ui.screens.auth.AuthViewModel
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.theme.BookmarkTheme
 import com.example.ui.theme.GlassTier
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
@@ -160,25 +174,67 @@ import java.util.Locale
 
 @Composable
 internal fun SettingsScreen(
-    useDynamicColor: Boolean,
-    onToggleDynamicColor: (Boolean) -> Unit,
-    glassTierOverride: GlassTier?,
-    onSetGlassTierOverride: (GlassTier?) -> Unit,
-    resolvedTier: GlassTier,
     onLogout: () -> Unit,
     viewModel: BookmarkViewModel
 ) {
+    val context = LocalContext.current
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val sectionOffsets = remember { mutableStateMapOf<String, Int>() }
+    var showPurgeConfirm by remember { mutableStateOf(false) }
+    var showModelDeleteConfirm by remember { mutableStateOf(false) }
+    val useDynamicColor by viewModel.useDynamicColor.collectAsStateWithLifecycle()
+    val glassTierOverride by viewModel.glassTierOverride.collectAsStateWithLifecycle()
+    val resolvedTier = rememberGlassTier(glassTierOverride)
+    val sectionChips = listOf(
+        "Look" to "appearance",
+        "Keys" to "keys",
+        "Agent" to "agent",
+        "Session" to "session",
+        "Data" to "data",
+        "AI Tools" to "intel",
+        "Model" to "model"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            sectionChips.forEach { (label, key) ->
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .pressBounce {
+                            scope.launch {
+                                scrollState.animateScrollTo(sectionOffsets[key] ?: 0)
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
         // Aesthetics & Colors Card
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["appearance"] = it.positionInParent().y.roundToInt() }
                 .glassSurface(tier = resolvedTier)
                 .padding(16.dp)
         ) {
@@ -199,14 +255,14 @@ internal fun SettingsScreen(
                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Toggle wallpaper-based dynamic colors",
+                            text = "Toggle wallpaper-based dynamic colors (Android only)",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
                     Switch(
                         checked = useDynamicColor,
-                        onCheckedChange = onToggleDynamicColor,
+                        onCheckedChange = { viewModel.setUseDynamicColor(it) },
                         modifier = Modifier.testTag("dynamic_color_switch")
                     )
                 }
@@ -231,7 +287,7 @@ internal fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.setThemeSetting(themeOption) }
+                            .pressBounce { viewModel.setThemeSetting(themeOption) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -250,27 +306,112 @@ internal fun SettingsScreen(
             }
         }
 
-        // xAI API Key Card — lets the user run AI features on their OWN key instead of one
-        // baked into the APK (the key is stored AES-GCM-encrypted via TokenStore).
+        // xAI API Key Card — BYOK: Curio ships without any built-in key.
+        // Users must supply their own key from console.x.ai to unlock AI features.
+        // The key is stored AES-GCM-encrypted via TokenStore (never leaves the device).
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["keys"] = it.positionInParent().y.roundToInt() }
                 .glassSurface(tier = resolvedTier)
                 .padding(16.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                val keyConfigured by viewModel.xaiKeyConfigured.collectAsStateWithLifecycle()
+                val keyStatus by viewModel.xaiKeyStatus.collectAsStateWithLifecycle()
+                val keyConfigured = keyStatus is XaiKeyStatus.Present
                 // Not using rememberSaveable intentionally: key input is transient; saved key is in TokenStore.
                 val keyInput = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
                 Text(
                     text = "xAI API Key",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
-                Text(
-                    text = if (keyConfigured) "A key is configured. AI analysis, chat and image generation are enabled."
-                    else "Add your own xAI key (console.x.ai) to enable cloud AI. Stored encrypted on this device.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                // Live status line: tells the user whether a key is present, WHERE it came from
+                // (loaded from encrypted storage vs just saved), and whether it is actually live —
+                // verified against xAI's key-introspection endpoint — rather than merely stored.
+                val neutral = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                val presentOrigin = (keyStatus as? XaiKeyStatus.Present)
+                val originLabel = when (presentOrigin?.origin) {
+                    XaiKeyOrigin.JUST_SAVED -> "Key saved"
+                    else -> "Key loaded from encrypted storage"
+                }
+                val (statusColor, statusText) = when (val s = keyStatus) {
+                    XaiKeyStatus.Unknown -> neutral to "Checking for a saved key…"
+                    XaiKeyStatus.NotSet -> MaterialTheme.colorScheme.error to "No key set — AI features are off."
+                    is XaiKeyStatus.Present -> when (val c = s.check) {
+                        XaiKeyCheck.Checking -> neutral to "$originLabel — verifying with xAI…"
+                        XaiKeyCheck.Live -> Color(0xFF4CAF50) to "$originLabel — live ✓ verified with xAI."
+                        is XaiKeyCheck.Invalid -> MaterialTheme.colorScheme.error to "$originLabel — not working: ${c.reason}."
+                        XaiKeyCheck.Unreachable -> Color(0xFFFFA000) to "$originLabel — couldn't reach xAI to verify it."
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("xai_key_status")) {
+                    if (presentOrigin?.check == XaiKeyCheck.Checking || keyStatus == XaiKeyStatus.Unknown) {
+                        CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(statusColor, CircleShape)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = statusColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // Re-check is only offered when a check finished and could change: a failed
+                    // verify (bad network) or a rejected key the user has since re-enabled.
+                    if (presentOrigin != null &&
+                        (presentOrigin.check is XaiKeyCheck.Invalid || presentOrigin.check == XaiKeyCheck.Unreachable)
+                    ) {
+                        Text(
+                            text = "Retry",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .pressBounce { viewModel.verifyXaiKey() }
+                                .padding(start = 8.dp)
+                                .testTag("xai_key_retry")
+                        )
+                    }
+                }
+                val uriHandler = LocalUriHandler.current
+                val linkColor = MaterialTheme.colorScheme.primary
+                val labelStyle = MaterialTheme.typography.labelSmall
+                // Guidance + console.x.ai link stays visible in BOTH states: when unconfigured it
+                // tells the user a key is required; when configured it's still the place to grab a
+                // replacement key to rotate. Leading text and colour vary by state.
+                val xaiText = buildAnnotatedString {
+                    val baseColor = if (keyConfigured) {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    } else {
+                        MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                    }
+                    if (keyConfigured) {
+                        withStyle(SpanStyle(color = baseColor)) {
+                            // Presence/liveness now lives in the status line above; this line is
+                            // just the rotation pointer.
+                            append("AI analysis, chat, and image generation use this key. Rotate it anytime at ")
+                        }
+                    } else {
+                        withStyle(SpanStyle(color = baseColor)) { append("Required. Get a free key at ") }
+                    }
+                    pushStringAnnotation("URL", "https://console.x.ai")
+                    withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                        append("console.x.ai")
+                    }
+                    pop()
+                    withStyle(SpanStyle(color = baseColor)) { append(" → API Keys. Stored encrypted on this device only.") }
+                }
+                ClickableText(
+                    text = xaiText,
+                    style = labelStyle,
+                    onClick = { offset ->
+                        xaiText.getStringAnnotations("URL", offset, offset)
+                            .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                    }
                 )
                 androidx.compose.material3.OutlinedTextField(
                     value = keyInput.value,
@@ -294,7 +435,10 @@ internal fun SettingsScreen(
             }
         }
 
-        // Active Session Check & Clear Local Cache Card
+        // X OAuth Client ID Card — BYOK for bookmark sync. The built-in client ID is a shared
+        // default; users whose sync fails with "authentication failed" can create their own X app
+        // and paste its OAuth 2.0 client ID here. Tokens are minted per-client, so changing the ID
+        // requires a fresh sign-in (the status line says so).
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -302,23 +446,176 @@ internal fun SettingsScreen(
                 .padding(16.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val clientIdStatus by viewModel.xClientIdStatus.collectAsStateWithLifecycle()
+                val clientIdInput = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
                 Text(
-                    text = "X Live Session Control",
+                    text = "X API Client ID",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                val (idColor, idText) = when (clientIdStatus) {
+                    XClientIdStatus.BUILT_IN ->
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f) to
+                            "Using Curio's built-in client ID."
+                    XClientIdStatus.CUSTOM_LOADED ->
+                        Color(0xFF4CAF50) to "Your client ID is loaded and in use."
+                    XClientIdStatus.CUSTOM_SAVED ->
+                        Color(0xFF4CAF50) to "Your client ID is saved — sign out and back in to activate it."
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("x_client_id_status")) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(idColor, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = idText,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = idColor
+                    )
+                }
+                val uriHandler = LocalUriHandler.current
+                val linkColor = MaterialTheme.colorScheme.primary
+                val clientIdHelp = buildAnnotatedString {
+                    val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    withStyle(SpanStyle(color = baseColor)) {
+                        append(
+                            "If bookmark sync fails with “authentication failed”, create a free X app at "
+                        )
+                    }
+                    pushStringAnnotation("URL", "https://developer.x.com")
+                    withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                        append("developer.x.com")
+                    }
+                    pop()
+                    withStyle(SpanStyle(color = baseColor)) {
+                        append(
+                            " and paste its OAuth 2.0 client ID here. Leave blank and save to go back " +
+                                "to the built-in ID. Changing it requires signing out and back in."
+                        )
+                    }
+                }
+                ClickableText(
+                    text = clientIdHelp,
+                    style = MaterialTheme.typography.labelSmall,
+                    onClick = { offset ->
+                        clientIdHelp.getStringAnnotations("URL", offset, offset)
+                            .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                    }
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = clientIdInput.value,
+                    onValueChange = { clientIdInput.value = it },
+                    label = { Text("OAuth 2.0 Client ID") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("x_client_id_input")
+                )
+                androidx.compose.material3.Button(
+                    onClick = {
+                        viewModel.saveXClientId(clientIdInput.value)
+                        clientIdInput.value = ""
+                    },
+                    modifier = Modifier.testTag("x_client_id_save")
+                ) { Text("Save client ID") }
+            }
+        }
+
+        // Assistant write-access Card — controls whether on-device AI agents / system assistants
+        // may modify bookmarks via Curio's AppFunctions. The appfunctions alpha09 API does not
+        // expose the calling package to function code, so this user toggle is the available
+        // defence; read-only discovery stays enabled regardless. Gate lives in CurioFunctions.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["agent"] = it.positionInParent().y.roundToInt() }
+                .glassSurface(tier = resolvedTier)
+                .padding(16.dp)
+        ) {
+            val allowAgentWrites by viewModel.allowAgentWrites.collectAsStateWithLifecycle()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Allow assistants to modify my bookmarks",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "When off, AI agents and system assistants can still search and read " +
+                            "your library, but can't add bookmarks, edit notes, or change favourites.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = allowAgentWrites,
+                    onCheckedChange = { viewModel.setAllowAgentWrites(it) },
+                    modifier = Modifier.testTag("agent_writes_switch")
+                )
+            }
+        }
+
+        // Active Session Check & Clear Local Cache Card
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["session"] = it.positionInParent().y.roundToInt() }
+                .glassSurface(tier = resolvedTier)
+                .padding(16.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Account",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
 
+                val accountName by viewModel.accountName.collectAsStateWithLifecycle()
+                val accountUsername by viewModel.accountUsername.collectAsStateWithLifecycle()
+                val accountAvatarUrl by viewModel.accountAvatarUrl.collectAsStateWithLifecycle()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // X hands back the tiny 48×48 "_normal" variant; swap in the 400×400 one so
+                    // the avatar stays sharp on high-density screens.
+                    val displayAvatarUrl = accountAvatarUrl?.replace("_normal", "_400x400")
+                    if (displayAvatarUrl != null) {
+                        coil.compose.AsyncImage(
+                            model = displayAvatarUrl,
+                            contentDescription = "X profile photo",
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .testTag("account_avatar")
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Person,
+                                contentDescription = "X profile photo placeholder",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Authenticated with PKCE",
+                            text = accountName ?: "Signed in with X",
                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Locally encrypted security token handles active",
+                            text = accountUsername?.let { "@$it" }
+                                ?: "Locally encrypted security token handles active",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
@@ -329,12 +626,12 @@ internal fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
                                 shape = RoundedCornerShape(12.dp)
                             )
-                            .clickable { onLogout() }
+                            .pressBounce { onLogout() }
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                             .testTag("logout_button")
                     ) {
                         Text(
-                            text = "LOG OUT",
+                            text = "SIGN OUT",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.error,
                                 fontWeight = FontWeight.ExtraBold
@@ -343,6 +640,14 @@ internal fun SettingsScreen(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.error.copy(alpha = 0.2f))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "DANGER ZONE",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 1.sp),
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                )
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Row(
@@ -364,18 +669,19 @@ internal fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .background(
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f),
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
                                 shape = RoundedCornerShape(12.dp)
                             )
-                            .clickable { viewModel.clearAllData() }
+                            .pressBounce { showPurgeConfirm = true }
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.DeleteSweep, contentDescription = "Purge DB icon", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Purge DB icon", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                             Text(
                                 text = "PURGE CACHE",
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.ExtraBold
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.error
                                 )
                             )
                         }
@@ -384,10 +690,64 @@ internal fun SettingsScreen(
             }
         }
 
+        if (showPurgeConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showPurgeConfirm = false },
+                title = { Text("Purge local cache?") },
+                text = {
+                    Text(
+                        "Clears cached bookmark lists and OCR records. Your X session and cloud sync are unaffected.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showPurgeConfirm = false
+                        viewModel.clearAllData()
+                        CurioNotifier.notify(context, "Local cache cleared")
+                    }) {
+                        Text("Purge cache", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPurgeConfirm = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        if (showModelDeleteConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showModelDeleteConfirm = false },
+                title = { Text("Delete on-device model?") },
+                text = {
+                    Text(
+                        "Removes the downloaded semantic-search model (~25MB). AI search falls back to keyword search until you download it again.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showModelDeleteConfirm = false
+                        viewModel.deleteEmbeddingModel()
+                    }) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showModelDeleteConfirm = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
         // Backup & Data Portability Card (Phase 6)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["data"] = it.positionInParent().y.roundToInt() }
                 .glassSurface(tier = resolvedTier)
                 .padding(16.dp)
         ) {
@@ -422,13 +782,14 @@ internal fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                                 shape = RoundedCornerShape(12.dp)
                             )
-                            .clickable {
+                            .pressBounce {
                                 if (rawBookmarks.isEmpty()) {
-                                    android.widget.Toast.makeText(context, "No local bookmarks to export!", android.widget.Toast.LENGTH_SHORT).show()
+                                    CurioNotifier.notify(context, "No local bookmarks to export")
                                 } else {
                                     val jsonString = exportBackupJson(rawBookmarks)
-                                    copyToClipboard(context, jsonString, "Curio Backup JSON")
-                                    shareBookmark(context, jsonString)
+                                    copyToClipboard(context, jsonString, "Curio Backup JSON", notify = false)
+                                    shareBookmark(context, jsonString, notify = false)
+                                    CurioNotifier.notify(context, "Backup copied — share sheet opened")
                                 }
                             }
                             .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -452,15 +813,77 @@ internal fun SettingsScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["intel"] = it.positionInParent().y.roundToInt() }
                 .glassSurface(tier = resolvedTier)
                 .padding(16.dp)
         ) {
             val context = LocalContext.current
+            // Embed/Resolve/Dedup all report through syncState; surface it here (where the buttons
+            // live) so the user sees live progress and the final result without leaving Settings.
+            val researchStatus by viewModel.syncState.collectAsStateWithLifecycle()
+            var embeddingBackend by remember {
+                mutableStateOf(com.example.data.embedding.EmbeddingPreference.get(context))
+            }
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = "Research Intelligence",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
+
+                // Embedding engine chooser. Lets the user force which backend "Embed All" and search
+                // use, so a "0 embedded" result is explainable: On-device requires the EmbeddingGemma
+                // model downloaded below; xAI has no public embeddings endpoint yet (usually returns 0).
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Embedding engine", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val options = listOf(
+                            com.example.data.embedding.EmbeddingBackend.AUTO to "Auto",
+                            com.example.data.embedding.EmbeddingBackend.ON_DEVICE to "On-device",
+                            com.example.data.embedding.EmbeddingBackend.XAI to "xAI"
+                        )
+                        options.forEach { (backend, label) ->
+                            val selected = embeddingBackend == backend
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .pressBounce {
+                                        embeddingBackend = backend
+                                        com.example.data.embedding.EmbeddingPreference.set(context, backend)
+                                    }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    label,
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium
+                                    ),
+                                    color = if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        when (embeddingBackend) {
+                            com.example.data.embedding.EmbeddingBackend.AUTO -> "On-device when the model is downloaded, otherwise xAI cloud."
+                            com.example.data.embedding.EmbeddingBackend.ON_DEVICE -> "Private, on-device only. Requires the EmbeddingGemma model (download below)."
+                            com.example.data.embedding.EmbeddingBackend.XAI -> "xAI cloud. Note: xAI has no public embeddings endpoint yet, so this often returns nothing."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+
+                androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
 
                 // Embed All
                 Row(
@@ -470,14 +893,25 @@ internal fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Embed All Bookmarks", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
-                        Text("Generate semantic vectors for AI search (uses xAI API)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Text(
+                            when (embeddingBackend) {
+                                com.example.data.embedding.EmbeddingBackend.AUTO ->
+                                    "Generate semantic vectors (on-device when model ready, else xAI cloud)."
+                                com.example.data.embedding.EmbeddingBackend.ON_DEVICE ->
+                                    "Generate semantic vectors on-device only (requires downloaded model)."
+                                com.example.data.embedding.EmbeddingBackend.XAI ->
+                                    "Generate semantic vectors via xAI cloud."
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
                     }
                     Box(
                         modifier = Modifier
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                            .clickable {
+                            .pressBounce {
                                 viewModel.embedAllBookmarks()
-                                android.widget.Toast.makeText(context, "Generating embeddings…", android.widget.Toast.LENGTH_SHORT).show()
+                                CurioNotifier.notify(context, "Generating embeddings…")
                             }
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
@@ -500,9 +934,9 @@ internal fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                            .clickable {
+                            .pressBounce {
                                 viewModel.resolveNewSources()
-                                android.widget.Toast.makeText(context, "Resolving sources…", android.widget.Toast.LENGTH_SHORT).show()
+                                CurioNotifier.notify(context, "Resolving sources…")
                             }
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
@@ -525,14 +959,41 @@ internal fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                            .clickable {
+                            .pressBounce {
                                 viewModel.deduplicateBySource()
-                                android.widget.Toast.makeText(context, "Deduplicating…", android.widget.Toast.LENGTH_SHORT).show()
+                                CurioNotifier.notify(context, "Deduplicating…")
                             }
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
                         Text("DEDUP", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.error))
                     }
+                }
+
+                // Live status line for the three actions above.
+                when (val s = researchStatus) {
+                    is SyncUiState.Loading -> s.message?.let { msg ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp), strokeWidth = 2.dp
+                            )
+                            Text(msg, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
+                        }
+                    }
+                    is SyncUiState.Success -> Text(
+                        "✓ ${s.message}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    is SyncUiState.Error -> Text(
+                        s.error,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    else -> {}
                 }
             }
         }
@@ -541,11 +1002,15 @@ internal fun SettingsScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { sectionOffsets["model"] = it.positionInParent().y.roundToInt() }
                 .glassSurface(tier = resolvedTier)
                 .padding(16.dp)
         ) {
             val context = LocalContext.current
             val modelState by viewModel.embeddingModelState.collectAsStateWithLifecycle()
+            // Transient HF token entry for the first (gated) download. Blank → reuse the token
+            // already saved in TokenStore, so returning users never have to re-enter it.
+            var embedHfToken by remember { mutableStateOf("") }
             var indexWhileCharging by remember {
                 mutableStateOf(com.example.background.EmbeddingIndexScheduler.isEnabled(context))
             }
@@ -564,6 +1029,44 @@ internal fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
 
+                // EmbeddingGemma is Gemma-license-gated on Hugging Face, so the first download needs
+                // a free HF token. Surface the link + guidance + an (optional) token field here so the
+                // download is self-sufficient from Settings — no bare 401, no bouncing to the feed
+                // sheet. A blank field reuses the token already saved in TokenStore.
+                if (modelState !is com.example.data.embedding.EmbeddingModelManager.State.Ready) {
+                    val hfUriHandler = LocalUriHandler.current
+                    val hfLinkColor = MaterialTheme.colorScheme.primary
+                    val hfText = buildAnnotatedString {
+                        val base = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        withStyle(SpanStyle(color = base)) { append("First download needs a free Hugging Face token — get one at ") }
+                        pushStringAnnotation("URL", "https://huggingface.co/settings/tokens")
+                        withStyle(SpanStyle(color = hfLinkColor, textDecoration = TextDecoration.Underline)) {
+                            append("huggingface.co/settings/tokens")
+                        }
+                        pop()
+                        withStyle(SpanStyle(color = base)) { append(", then accept the Gemma license on the model page. Stored encrypted on this device.") }
+                    }
+                    ClickableText(
+                        text = hfText,
+                        style = MaterialTheme.typography.labelSmall,
+                        onClick = { offset ->
+                            hfText.getStringAnnotations("URL", offset, offset)
+                                .firstOrNull()?.let { hfUriHandler.openUri(it.item) }
+                        }
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = embedHfToken,
+                        onValueChange = { embedHfToken = it },
+                        label = { Text("Hugging Face token (optional if already saved)") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Password
+                        ),
+                        modifier = Modifier.fillMaxWidth().testTag("embed_hf_token_input")
+                    )
+                }
+
                 // Model status + download/delete controls (state-driven)
                 when (val s = modelState) {
                     is com.example.data.embedding.EmbeddingModelManager.State.Absent -> {
@@ -576,7 +1079,7 @@ internal fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.downloadEmbeddingModel() }
+                                    .pressBounce { viewModel.downloadEmbeddingModel(embedHfToken) }
                                     .padding(horizontal = 14.dp, vertical = 8.dp)
                                     .testTag("download_model_button")
                             ) {
@@ -607,20 +1110,25 @@ internal fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.deleteEmbeddingModel() }
+                                    .pressBounce { showModelDeleteConfirm = true }
                                     .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text("DELETE", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.error))
                             }
                         }
+                        Text(
+                            "Uses the seq256 on-device model (256-token window). If embedding failed before updating, tap Clear embeddings below then Embed All.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                        )
                         // Build the index immediately (foreground, on-device) — handy right after download.
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                                .clickable {
+                                .pressBounce {
                                     com.example.background.EmbeddingIndexScheduler.runNow(context)
-                                    android.widget.Toast.makeText(context, "Building on-device index…", android.widget.Toast.LENGTH_SHORT).show()
+                                    CurioNotifier.notify(context, "Building on-device index…")
                                 }
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                             contentAlignment = Alignment.Center
@@ -634,7 +1142,7 @@ internal fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.downloadEmbeddingModel() }
+                                    .pressBounce { viewModel.downloadEmbeddingModel(embedHfToken) }
                                     .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text("RETRY", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary))
@@ -698,13 +1206,13 @@ internal fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSetGlassTierOverride(tierOption) }
+                            .pressBounce { viewModel.setGlassTierOverride(tierOption) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(
                             selected = glassTierOverride == tierOption,
-                            onClick = { onSetGlassTierOverride(tierOption) }
+                            onClick = { viewModel.setGlassTierOverride(tierOption) }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(

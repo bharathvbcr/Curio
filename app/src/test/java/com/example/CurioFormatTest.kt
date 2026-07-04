@@ -16,7 +16,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** Pure formatting helpers used across the feed/cards. */
-@RunWith(RobolectricTestRunner)
+@RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
 class CurioFormatTest {
 

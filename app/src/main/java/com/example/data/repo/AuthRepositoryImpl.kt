@@ -65,7 +65,7 @@ class AuthRepositoryImpl(
         val challenge = generateCodeChallenge(verifier)
         val state = UUID.randomUUID().toString()
 
-        val clientId = BuildConfig.CLIENT_ID.takeIf { it.isNotEmpty() } ?: BuildConfig.X_CLIENT_ID
+        val clientId = tokenStore.resolveXClientId()
         val redirectUri = BuildConfig.X_REDIRECT_URI
         val scope = "tweet.read users.read bookmark.read offline.access"
 
@@ -88,7 +88,7 @@ class AuthRepositoryImpl(
     override suspend fun completeLogin(code: String, codeVerifier: String): Result<Unit> {
         return try {
             _authState.value = AuthState.SigningIn
-            val clientId = BuildConfig.CLIENT_ID.takeIf { it.isNotEmpty() } ?: BuildConfig.X_CLIENT_ID
+            val clientId = tokenStore.resolveXClientId()
             val redirectUri = BuildConfig.X_REDIRECT_URI
 
             // Exchange token
@@ -113,6 +113,7 @@ class AuthRepositoryImpl(
                 username = username,
                 name = name
             )
+            tokenStore.saveProfile(username, name, userResponse.data.profileImageUrl)
 
             _authState.value = AuthState.SignedIn(userId = userId, username = username, name = name)
             Result.success(Unit)
@@ -130,6 +131,19 @@ class AuthRepositoryImpl(
     override suspend fun logout() {
         tokenStore.clear()
         _authState.value = AuthState.SignedOut
+    }
+
+    override suspend fun refreshProfile() {
+        try {
+            if (tokenStore.getProfileImageUrl() != null) return
+            val token = tokenStore.getAccessToken() ?: return
+            val user = api.getUserMe("Bearer $token").data
+            tokenStore.saveProfile(user.username, user.name, user.profileImageUrl)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            // Expired access token or offline — the avatar just stays absent until the next try.
+            Log.w(TAG, "Profile backfill skipped: ${e.message}")
+        }
     }
 
     // --- HELPER CRYPTO GENERATORS ---

@@ -1,33 +1,35 @@
 package com.example.data
 
 /**
- * Process-wide resolver for the xAI API key.
+ * Process-wide holder for the user-supplied xAI API key (BYOK).
  *
- * Shipping a shared developer key inside the APK lets any installer extract it and run up the
- * developer's xAI bill. This holder prefers a key the user supplied at runtime (persisted
- * encrypted in [com.example.data.remote.TokenStore] and loaded into [runtimeKey] at startup /
- * when saved in Settings) and only falls back to the build-time [com.example.BuildConfig.XAI_API_KEY]
- * — which for a public release should be left as the `.env.example` placeholder so no real key
- * ever ships.
+ * No key ships inside the APK. Users paste their own key in Settings → xAI API Key;
+ * it is encrypted via [com.example.data.remote.TokenStore] and loaded into [runtimeKey]
+ * at app startup and whenever the user saves a new value.
  *
- * A simple holder (rather than constructor injection through every AI service) keeps the change
- * surface to the read sites; the key is genuinely app-global.
+ * A simple singleton (rather than constructor injection through every AI service) keeps the
+ * change surface to the read sites; the key is genuinely app-global.
  */
 object XaiKeyStore {
 
     @Volatile
     private var runtimeKey: String? = null
 
-    /** Sets (or clears, with null/blank) the user-supplied key. */
+    /**
+     * Sets (or clears, with null/blank) the user-supplied key.
+     *
+     * Trims first: a key pasted into Settings or loaded from disk can carry a trailing newline or
+     * spaces. Left intact, that whitespace makes OkHttp throw on the "Bearer …" header (an illegal
+     * header value), breaking every xAI call. Trimming here — the single write choke point — sanitizes
+     * every path (Settings save, startup load) so [resolve] always returns a clean key.
+     */
     fun setRuntimeKey(key: String?) {
-        runtimeKey = key?.takeIf { it.isNotBlank() }
+        runtimeKey = key?.trim()?.takeIf { it.isNotBlank() }
     }
 
-    /** The user key if present, else the build-time fallback (which may be a placeholder). */
-    fun resolve(): String = runtimeKey ?: com.example.BuildConfig.XAI_API_KEY
+    /** The user-supplied key, or empty string if none has been set. */
+    fun resolve(): String = runtimeKey ?: ""
 
-    /** True when a usable key is configured (set by the user or a real build-time key). */
-    fun isConfigured(): Boolean = resolve().let { it.isNotEmpty() && it != PLACEHOLDER }
-
-    const val PLACEHOLDER = "MY_XAI_API_KEY"
+    /** True only when the user has saved a non-blank key. */
+    fun isConfigured(): Boolean = !runtimeKey.isNullOrBlank()
 }

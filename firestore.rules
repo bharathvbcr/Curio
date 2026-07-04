@@ -4,9 +4,11 @@ rules_version = '2';
 //
 // Bookmarks are stored per-user under /users/{userId}/bookmarks/{bookmarkId}
 // (see FirebaseSyncManager). Access is allowed only when the authenticated caller
-// owns the path. This requires Firebase Auth — wire it up (a real google-services.json
-// plus custom-token sign-in minted after verifying the X session, or anonymous-then-link)
-// before enabling real cloud sync. Until then these rules deny all access by default,
+// owns the path. FirebaseSyncManager now performs anonymous sign-in, but its random
+// anonymous uid does NOT equal the X userId used in the path, so the check below still
+// fails closed for X-userId-keyed paths. Functioning cloud sync requires either keying
+// the path on auth.uid (per-device only) or a custom-token sign-in minted after verifying
+// the X session (uid == X userId; needs a backend). Until then these rules deny all access,
 // which is the safe posture: a client can never read or overwrite another user's corpus
 // by passing a public X userId.
 service cloud.firestore {

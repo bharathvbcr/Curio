@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -20,6 +21,8 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 /**
  * Curio motion language — iOS-flavoured liquid & bouncy springs.
@@ -49,6 +52,27 @@ object CurioMotion {
 
     /** Smooth fade timing used to pair with spring movement. */
     fun <T> fade(): AnimationSpec<T> = tween(durationMillis = 240, easing = EaseInOutCubic)
+}
+
+/** True when the user has disabled system animations (Developer options → Animator duration scale). */
+@Composable
+fun rememberReduceMotion(): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember(context) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
+}
+
+/** Returns [instant] when reduce-motion is on, otherwise [animated]. */
+@Composable
+fun <T> motionSpec(animated: AnimationSpec<T>, instant: AnimationSpec<T> = tween(0)): AnimationSpec<T> {
+    return if (rememberReduceMotion()) instant else animated
 }
 
 /**
@@ -102,3 +126,33 @@ fun Modifier.bounceScale(active: Boolean, activeScale: Float = 1.04f): Modifier 
 
 /** Content-size spring used for expand/collapse reveals. */
 fun <T> curioExpandSpec(): FiniteAnimationSpec<T> = CurioMotion.liquid()
+
+/**
+ * Guarantees a minimum interactive target (default 48dp, the Material/WCAG floor) around a
+ * small control **without changing the drawn size of its content**. Apply to the clickable
+ * element and let the inner glyph keep its visual size; the extra hit area centers on it.
+ *
+ * Many icon-only controls in Curio were sized well under 48dp (expand chevrons at 26dp,
+ * selection rings at 20dp, clear-search 'x' at 18dp), making them hard to hit. Wrapping the
+ * tap target with this restores an accessible hit area cheaply.
+ */
+fun Modifier.minTouchTarget(size: Dp = 48.dp): Modifier =
+    this.sizeIn(minWidth = size, minHeight = size)
+
+/**
+ * Haptic + [Role.Button] tap feedback **without** the scale shrink of [pressBounce] — for
+ * full-bleed rows and list items where an iOS press-shrink looks wrong, but we still want the
+ * light haptic tick and the button semantics that a bare `Modifier.clickable` silently drops.
+ */
+fun Modifier.tappable(
+    enabled: Boolean = true,
+    role: Role? = Role.Button,
+    haptic: Boolean = true,
+    onClick: () -> Unit
+): Modifier = composed {
+    val haptics = LocalHapticFeedback.current
+    this.clickable(enabled = enabled, role = role) {
+        if (haptic) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        onClick()
+    }
+}

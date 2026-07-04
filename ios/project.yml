@@ -1,0 +1,236 @@
+name: Curio
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Curio — iOS 26 SwiftUI full-parity port of the Curio Android app.
+# XcodeGen spec. Generate with:  xcodegen generate  (from the ios/ directory).
+#
+# Targets:
+#   • Curio            — the SwiftUI app (com.curio.app). App Intents ship in-app
+#                        (registered via AppDependencyManager in CurioApp.init).
+#   • CurioShareExtension — Share Extension receiver for X share-sheet hand-off
+#
+# Deployment: iOS 26.0 minimum, Swift 6 (strict concurrency).
+# Bundle id prefix: com.curio  (app = com.curio.app)
+# ─────────────────────────────────────────────────────────────────────────────
+
+options:
+  bundleIdPrefix: com.curio
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  xcodeVersion: "26.0"
+
+# ── Settings applied to every target ─────────────────────────────────────────
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    DEVELOPMENT_TEAM: ""                       # set in CI / local xcconfig
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+    GENERATE_INFOPLIST_FILE: NO
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"              # iPhone + iPad
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      ONLY_ACTIVE_ARCH: YES
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+
+configs:
+  Debug: debug
+  Release: release
+
+# ── Swift Package Manager dependencies ───────────────────────────────────────
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk.git
+    from: "12.0.0"                              # SDK 12.x → iOS 15+ baseline; Codable + @DocumentID in FirebaseFirestore
+
+# ─────────────────────────────────────────────────────────────────────────────
+targets:
+
+  # ───────────────────────────── App target ─────────────────────────────────
+  Curio:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Curio
+        excludes:
+          - "**/.DS_Store"
+    # NOTE: xcodegen REGENERATES Info.plist and the entitlements file on every
+    # `xcodegen generate` from the properties below — edit here, not the files.
+    info:
+      path: Curio/Info.plist
+      properties:
+        CFBundleDisplayName: Curio
+        # Modern full-screen launch (no UILaunchScreen key → letterboxed compatibility mode).
+        UILaunchScreen: {}
+        # OAuth redirect scheme (X PKCE login); must match CurioConfig.xRedirectURI.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.curio.app.oauth
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes: [curio-oauth]
+        # ChronosFlowBridge.isAvailable() probes the companion app via canOpenURL.
+        LSApplicationQueriesSchemes: [chronosflow]
+        # BGTaskScheduler maintenance (BackgroundTasks.TaskID).
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.curio.app.embedding-index
+          - com.curio.app.link-sweep
+        UIBackgroundModes: [processing]
+        # Curio's single unified Live Activity (LiveActivityManager + CurioActivityWidget).
+        NSSupportsLiveActivities: true
+        # xcconfig-injected build configuration read by CurioConfig (empty when unset →
+        # CurioConfig falls back to the baked Android BuildConfig defaults).
+        CLIENT_ID: $(CLIENT_ID)
+        X_CLIENT_ID: $(X_CLIENT_ID)
+        X_REDIRECT_URI: $(X_REDIRECT_URI)
+    entitlements:
+      path: Curio/Curio.entitlements
+      properties:
+        # TokenStore keychain items, shared with the in-app App Intents surface.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.curio.app
+        # group.com.curio.app: Share Extension → main app pendingShares hand-off.
+        # group.com.chronosflow.shared: ChronosFlowBridge JSON handoff queue.
+        com.apple.security.application-groups:
+          - group.com.curio.app
+          - group.com.chronosflow.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.app
+        PRODUCT_NAME: Curio
+        INFOPLIST_KEY_CFBundleDisplayName: Curio
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      # Explicit link so appintentsmetadataprocessor extracts the in-app App Intents
+      # metadata (auto-link alone leaves Siri/Spotlight/Shortcuts discovery empty).
+      - sdk: AppIntents.framework
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseFirestore
+      - package: Firebase
+        product: FirebaseAuth                   # anonymous-auth gate for Firestore sync
+      - target: CurioShareExtension
+        embed: true                             # bundle the appex inside the app
+      - target: CurioActivityWidget
+        embed: true                             # bundle the Live Activity widget appex inside the app
+
+  # ───────────────────── Live Activity widget target ────────────────────────
+  # WidgetKit extension hosting Curio's single Live Activity (the unified
+  # background-activity indicator: sync / sweep / index / digest). The shared
+  # `CurioActivityAttributes.swift` is compiled into BOTH this target and the app
+  # (ActivityKit requires an identical attributes type on both sides).
+  CurioActivityWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: CurioActivityWidget
+      - path: Curio/Curio/LiveActivity/CurioActivityAttributes.swift
+    info:
+      path: CurioActivityWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Curio Activity
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.app.CurioActivityWidget
+        PRODUCT_NAME: CurioActivityWidget
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+
+  # ─────────────────────── Share Extension target ──────────────────────────
+  # Receives ACTION_SEND-style shares (URL / plain-text) from the X app and other
+  # apps; queues payload into the App-Group UserDefaults for the main app to drain.
+  CurioShareExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: CurioShareExtension
+    info:
+      path: CurioShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Save to Curio
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule: >-
+              SUBQUERY (
+                extensionItems, $item,
+                SUBQUERY ($item.attachments, $a,
+                  ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+                  OR ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text"
+                ).@count > 0
+              ).@count > 0
+    entitlements:
+      path: CurioShareExtension/CurioShareExtension.entitlements
+      properties:
+        # Only the shared-queue App Group; the extension intentionally has no keychain
+        # entitlement (it never reads tokens — it just enqueues pendingShares).
+        com.apple.security.application-groups:
+          - group.com.curio.app
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.app.ShareExtension
+        PRODUCT_NAME: CurioShareExtension
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        # App Intents (6 intents + 2 AppEntities) ship inside the Curio app target,
+        # registered via AppDependencyManager in CurioApp.init — no separate extension.
+
+  # ───────────────────────────── Unit tests ─────────────────────────────────
+  # Ports of the Android JVM unit tests (app/src/test) that cover pure logic:
+  # formatting, Space rules, citation export, vector math, source extraction.
+  CurioTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: CurioTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Curio
+
+# ───────────────────────────────── Schemes ─────────────────────────────────
+schemes:
+  Curio:
+    build:
+      targets:
+        Curio: all
+        CurioShareExtension: all
+        CurioActivityWidget: all
+        # @testable import needs ENABLE_TESTABILITY — build the tests only for
+        # the test action so Release/profile/archive builds skip them.
+        CurioTests: [test]
+    run:
+      config: Debug
+      commandLineArguments: {}
+      environmentVariables: []
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - CurioTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

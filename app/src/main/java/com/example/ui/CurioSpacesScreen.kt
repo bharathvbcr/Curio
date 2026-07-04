@@ -50,6 +50,16 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Workspaces
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -84,6 +94,7 @@ import com.example.ui.theme.GlassTier
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.glassSurface
 import com.example.ui.theme.pressBounce
+import com.example.ui.theme.CurioColors
 
 /** The curated set of icons a Space can use, keyed by a stable string persisted on the entity. */
 internal val spaceIconKeys: List<String> =
@@ -166,7 +177,8 @@ internal fun CurioSpacesScreen(
                 }
             }
 
-            // Create-new-space tile sits up top so it's always reachable.
+            // Create-new-space tile — hidden when empty (empty state has its own CTA).
+            if (spaces.isNotEmpty()) {
             item {
                 Row(
                     modifier = Modifier
@@ -191,6 +203,7 @@ internal fun CurioSpacesScreen(
                         Text("Create a collection", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                     }
                 }
+            }
             }
 
             if (spaces.isEmpty()) {
@@ -279,7 +292,7 @@ private fun SpaceCard(
                         .background(Brush.linearGradient(listOf(color.copy(alpha = 0.95f), color.copy(alpha = 0.5f))), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(spaceIcon(space.icon), contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+                    Icon(spaceIcon(space.icon), contentDescription = null, tint = CurioColors.onColor(color), modifier = Modifier.size(24.dp))
                 }
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -306,17 +319,41 @@ private fun SpaceCard(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                     )
                 }
-                if (space.isSmart) {
-                    SpaceIconButton(Icons.Filled.AutoAwesome, "Apply rules for ${space.name}", color.copy(alpha = 0.9f), onApplyRules)
-                }
+                // Keep the frequent Pin toggle inline; fold Apply/Edit/Delete into a single overflow
+                // menu so the row isn't a cluster of 4 tap targets fighting the whole-card open gesture.
                 SpaceIconButton(
                     if (space.isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
                     if (space.isPinned) "Unpin ${space.name}" else "Pin ${space.name}",
                     if (space.isPinned) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
                     onTogglePin
                 )
-                SpaceIconButton(Icons.Default.Edit, "Edit ${space.name}", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), onEdit)
-                SpaceIconButton(Icons.Default.Delete, "Delete ${space.name}", MaterialTheme.colorScheme.error.copy(alpha = 0.8f), onDelete)
+                Box {
+                    var menuExpanded by remember { mutableStateOf(false) }
+                    SpaceIconButton(
+                        Icons.Default.MoreVert,
+                        "More actions for ${space.name}",
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                    ) { menuExpanded = true }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        if (space.isSmart) {
+                            DropdownMenuItem(
+                                text = { Text("Apply rules") },
+                                leadingIcon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = color) },
+                                onClick = { menuExpanded = false; onApplyRules() }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                            onClick = { menuExpanded = false; onEdit() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                            onClick = { menuExpanded = false; onDelete() }
+                        )
+                    }
+                }
             }
 
             if (space.description.isNotBlank()) {
@@ -466,7 +503,7 @@ internal fun SpaceEditorDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f), RoundedCornerShape(12.dp))
-                        .clickable { isPinned = !isPinned }
+                        .pressBounce { isPinned = !isPinned }
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -489,11 +526,11 @@ internal fun SpaceEditorDialog(
                 // Color picker
                 Text("COLOR", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 androidx.compose.foundation.layout.FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    spacePalette.forEach { c ->
+                    spacePalette.forEachIndexed { i, c ->
                         val selected = c == color
                         Box(
                             modifier = Modifier
@@ -501,10 +538,18 @@ internal fun SpaceEditorDialog(
                                 .bounceScale(selected)
                                 .background(Color(c), CircleShape)
                                 .border(width = if (selected) 3.dp else 0.dp, color = MaterialTheme.colorScheme.onSurface, shape = CircleShape)
-                                .clickable { color = c },
+                                // Radio semantics so TalkBack announces "Color N, radio button, selected".
+                                .selectable(
+                                    selected = selected,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.RadioButton,
+                                    onClick = { color = c }
+                                )
+                                .semantics { contentDescription = "Color ${i + 1}" },
                             contentAlignment = Alignment.Center
                         ) {
-                            if (selected) Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            if (selected) Icon(Icons.Default.Check, contentDescription = null, tint = CurioColors.onColor(Color(c)), modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -512,7 +557,7 @@ internal fun SpaceEditorDialog(
                 // Icon picker
                 Text("ICON", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 androidx.compose.foundation.layout.FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -524,7 +569,14 @@ internal fun SpaceEditorDialog(
                                 .bounceScale(selected)
                                 .background(if (selected) Color(color).copy(alpha = 0.2f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), RoundedCornerShape(10.dp))
                                 .border(width = 1.dp, color = if (selected) Color(color) else Color.Transparent, shape = RoundedCornerShape(10.dp))
-                                .clickable { icon = key },
+                                // The child Icon's contentDescription (= key) supplies the label.
+                                .selectable(
+                                    selected = selected,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.RadioButton,
+                                    onClick = { icon = key }
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(spaceIcon(key), contentDescription = key, tint = if (selected) Color(color) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
@@ -548,7 +600,7 @@ internal fun SpaceEditorDialog(
                             .weight(1f)
                             .height(48.dp)
                             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), RoundedCornerShape(14.dp))
-                            .clickable { dismiss() },
+                            .pressBounce { dismiss() },
                         contentAlignment = Alignment.Center
                     ) {
                         Text("CANCEL", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)))
@@ -559,11 +611,11 @@ internal fun SpaceEditorDialog(
                             .weight(1f)
                             .height(48.dp)
                             .background(if (canSave) Color(color) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                            .clickable(enabled = canSave) { onConfirm(name, color, icon, description, assembledRules(), isPinned) }
+                            .pressBounce(enabled = canSave) { onConfirm(name, color, icon, description, assembledRules(), isPinned) }
                             .testTag("space_save_button"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(if (existing == null) "CREATE" else "SAVE", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, color = Color.White))
+                        Text(if (existing == null) "CREATE" else "SAVE", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, color = if (canSave) CurioColors.onColor(Color(color)) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)))
                     }
                 }
     }
@@ -606,17 +658,15 @@ private fun SpaceRulesEditor(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RulePill(
+                    RuleFieldDropdown(
                         text = rule.field.label,
                         accent = accent,
                         modifier = Modifier.testTag("space_rule_field_$index")
-                    ) {
-                        val next = RuleField.entries[(rule.field.ordinal + 1) % RuleField.entries.size]
-                        rules[index] = rule.copy(field = next)
+                    ) { field ->
+                        rules[index] = rule.copy(field = field)
                     }
-                    RulePill(text = rule.op.label, accent = accent) {
-                        val next = RuleOp.entries[(rule.op.ordinal + 1) % RuleOp.entries.size]
-                        rules[index] = rule.copy(op = next)
+                    RuleOpDropdown(text = rule.op.label, accent = accent) { op ->
+                        rules[index] = rule.copy(op = op)
                     }
                     Box(modifier = Modifier.weight(1f))
                     Icon(
@@ -626,7 +676,7 @@ private fun SpaceRulesEditor(
                         modifier = Modifier
                             .size(20.dp)
                             .clip(CircleShape)
-                            .clickable { rules.removeAt(index) }
+                            .pressBounce { rules.removeAt(index) }
                             .padding(2.dp)
                     )
                 }
@@ -650,7 +700,7 @@ private fun SpaceRulesEditor(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(accent.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
-                .clickable { rules.add(SpaceRule(RuleField.KEYWORD, RuleOp.CONTAINS, "")) }
+                .pressBounce { rules.add(SpaceRule(RuleField.KEYWORD, RuleOp.CONTAINS, "")) }
                 .padding(horizontal = 12.dp, vertical = 10.dp)
                 .testTag("space_add_rule_button"),
             verticalAlignment = Alignment.CenterVertically,
@@ -675,7 +725,7 @@ private fun SpaceRulesEditor(
                             modifier = Modifier
                                 .background(if (selected) accent.copy(alpha = 0.18f) else onSurface.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
                                 .border(1.dp, if (selected) accent else Color.Transparent, RoundedCornerShape(8.dp))
-                                .clickable { onMatchModeChange(mode) }
+                                .pressBounce { onMatchModeChange(mode) }
                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Text(
@@ -711,18 +761,73 @@ private fun SpaceRulesEditor(
     }
 }
 
-/** A small tappable pill that cycles through enum choices in the rule builder. */
+/** A small pill that opens a dropdown to pick a rule field. */
 @Composable
-private fun RulePill(text: String, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(
-        modifier = modifier
-            .background(accent.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = accent)
+private fun RuleFieldDropdown(
+    text: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onSelect: (RuleField) -> Unit
+) {
+    RuleEnumDropdown(
+        text = text,
+        accent = accent,
+        modifier = modifier,
+        options = RuleField.entries.map { it.label to it },
+        onSelect = onSelect
+    )
+}
+
+/** A small pill that opens a dropdown to pick a rule operator. */
+@Composable
+private fun RuleOpDropdown(
+    text: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onSelect: (RuleOp) -> Unit
+) {
+    RuleEnumDropdown(
+        text = text,
+        accent = accent,
+        modifier = modifier,
+        options = RuleOp.entries.map { it.label to it },
+        onSelect = onSelect
+    )
+}
+
+@Composable
+private fun <T> RuleEnumDropdown(
+    text: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    options: List<Pair<String, T>>,
+    onSelect: (T) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .background(accent.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .pressBounce { expanded = true }
+                .padding(start = 12.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(text, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = accent)
+            Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose", tint = accent, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (label, value) ->
+                DropdownMenuItem(
+                    text = { Text(label, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)) },
+                    onClick = {
+                        onSelect(value)
+                        expanded = false
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -757,7 +862,7 @@ private fun DeleteSpaceDialog(space: Space, tier: GlassTier, onDismiss: () -> Un
                             .weight(1f)
                             .height(48.dp)
                             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), RoundedCornerShape(14.dp))
-                            .clickable { dismiss() },
+                            .pressBounce { dismiss() },
                         contentAlignment = Alignment.Center
                     ) {
                         Text("CANCEL", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)))
@@ -767,7 +872,7 @@ private fun DeleteSpaceDialog(space: Space, tier: GlassTier, onDismiss: () -> Un
                             .weight(1f)
                             .height(48.dp)
                             .background(MaterialTheme.colorScheme.error, RoundedCornerShape(14.dp))
-                            .clickable { onConfirm() }
+                            .pressBounce { onConfirm() }
                             .testTag("space_delete_confirm_${space.id}"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -820,7 +925,7 @@ internal fun AssignToSpaceDialog(
                             .fillMaxWidth()
                             .height(52.dp)
                             .background(if (selected) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f), RoundedCornerShape(12.dp))
-                            .clickable { onAssign(space.id) }
+                            .pressBounce { onAssign(space.id) }
                             .padding(horizontal = 12.dp)
                             .testTag("assign_space_${space.id}"),
                         verticalAlignment = Alignment.CenterVertically,
@@ -830,7 +935,7 @@ internal fun AssignToSpaceDialog(
                             modifier = Modifier.size(34.dp).background(color.copy(alpha = 0.9f), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(spaceIcon(space.icon), contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(spaceIcon(space.icon), contentDescription = null, tint = CurioColors.onColor(color), modifier = Modifier.size(18.dp))
                         }
                         Text(space.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         Text("${space.count}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
@@ -845,7 +950,7 @@ internal fun AssignToSpaceDialog(
                             .fillMaxWidth()
                             .height(48.dp)
                             .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
-                            .clickable { onAssign(null) }
+                            .pressBounce { onAssign(null) }
                             .padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -861,7 +966,7 @@ internal fun AssignToSpaceDialog(
                         .fillMaxWidth()
                         .height(48.dp)
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
-                        .clickable { onCreateSpace() }
+                        .pressBounce { onCreateSpace() }
                         .padding(horizontal = 12.dp)
                         .testTag("assign_new_space_button"),
                     verticalAlignment = Alignment.CenterVertically,

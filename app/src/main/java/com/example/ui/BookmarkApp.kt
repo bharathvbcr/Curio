@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Screenshot
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.ui.text.font.FontFamily
@@ -55,12 +54,12 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Bookmarks
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Workspaces
 import androidx.compose.material.icons.outlined.Workspaces
 import androidx.compose.material3.CircularProgressIndicator
@@ -108,7 +107,13 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.AutoAwesome
 import android.content.Intent
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.navigationBarsPadding
 import com.example.MainActivity
 import com.example.domain.model.AuthState
 import com.example.domain.model.Bookmark
@@ -126,6 +131,8 @@ import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
 import com.example.ui.theme.pressBounce
+import com.example.ui.theme.tappable
+import com.example.ui.theme.rememberReduceMotion
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.curioAccentBrush
 import coil.compose.AsyncImage
@@ -167,9 +174,11 @@ import java.util.Locale
 @Composable
 fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewModel) {
     val authState by authViewModel.authState.collectAsStateWithLifecycle()
+    val loginError by authViewModel.loginError.collectAsStateWithLifecycle()
+    val loginSuccessMessage by authViewModel.loginSuccessMessage.collectAsStateWithLifecycle()
     var currentRoute by remember { mutableStateOf(CurioDestination.Bookmarks) }
-    var useDynamicColor by remember { mutableStateOf(true) }
-    var glassTierOverride by remember { mutableStateOf<GlassTier?>(null) }
+    val useDynamicColor by bookmarkViewModel.useDynamicColor.collectAsStateWithLifecycle()
+    val glassTierOverride by bookmarkViewModel.glassTierOverride.collectAsStateWithLifecycle()
     var showInputForm by remember { mutableStateOf(false) }
 
     // Theme collection supporting the system-aware toggle configuration
@@ -195,6 +204,8 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
             LoginScreen(
                 state = authState,
                 tier = resolvedTier,
+                errorMessage = loginError,
+                onDismissError = { authViewModel.clearLoginError() },
                 onLoginClick = {
                     authViewModel.onLoginClick { url ->
                         (context as? MainActivity)?.launchOAuthBrowser(url)
@@ -215,6 +226,16 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
     val isKeyboardOpen = WindowInsets.isImeVisible
     val drawerState = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    // System Back handling for the shell (the Reader overlay adds its own on top). Close the
+    // drawer if it's open, otherwise fall back from any sub-screen to the Bookmarks home. Only
+    // enabled when there's something to handle, so Back still exits the app from the home feed.
+    androidx.activity.compose.BackHandler(
+        enabled = drawerState.isOpen || currentRoute != CurioDestination.Bookmarks
+    ) {
+        if (drawerState.isOpen) coroutineScope.launch { drawerState.close() }
+        else currentRoute = CurioDestination.Bookmarks
+    }
 
     BookmarkTheme(
         darkTheme = darkTheme,
@@ -318,14 +339,6 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
                         // Divider line
                         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
 
-                        // Settings sits at the bottom, just above the connected account
-                        DrawerNavRow(
-                            icon = Icons.Filled.Settings,
-                            label = "Settings",
-                            selected = currentRoute == CurioDestination.Settings,
-                            onClick = { navigate(CurioDestination.Settings) }
-                        )
-
                         // Connected X account — tap to manage the session (sign out lives in Settings)
                         XAccountCard(
                             name = signedInState.name,
@@ -351,6 +364,16 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
                         )
                     )
             ) {
+                val globalSnackbar = remember { SnackbarHostState() }
+                DisposableEffect(coroutineScope) {
+                    CurioNotifier.showMessage = { msg ->
+                        coroutineScope.launch {
+                            globalSnackbar.showSnackbar(msg, duration = SnackbarDuration.Short)
+                        }
+                    }
+                    onDispose { CurioNotifier.showMessage = null }
+                }
+
                 val navItems = listOf(
                     GlassNavigationItem(
                         selectedIcon = Icons.Filled.Bookmarks,
@@ -381,12 +404,27 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
                                 title = currentRoute.title,
                                 tier = resolvedTier,
                                 navigationIcon = {
-                                    IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
-                                        Icon(
-                                            imageVector = Icons.Default.Menu,
-                                            contentDescription = "Open side workspace menu",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
+                                    // Insights / Settings are reached from the drawer (not the bottom bar),
+                                    // so give them an explicit Up arrow back to Bookmarks. The bottom-bar
+                                    // tabs (Spaces, Chat) keep the hamburger to reach the workspace drawer.
+                                    val isDrawerReached = currentRoute == CurioDestination.Insights ||
+                                        currentRoute == CurioDestination.Settings
+                                    if (isDrawerReached) {
+                                        IconButton(onClick = { currentRoute = CurioDestination.Bookmarks }) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                                contentDescription = "Back to bookmarks",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    } else {
+                                        IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Menu,
+                                                contentDescription = "Open side workspace menu",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                     }
                                 }
                             )
@@ -398,7 +436,9 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
                                 items = navItems,
                                 currentRoute = currentRoute.id,
                                 tier = resolvedTier,
-                                onNavigate = { currentRoute = CurioDestination.fromId(it) }
+                                onNavigate = { route ->
+                                    currentRoute = CurioDestination.fromId(route)
+                                }
                             )
                         }
                     },
@@ -440,42 +480,63 @@ fun BookmarkApp(authViewModel: AuthViewModel, bookmarkViewModel: BookmarkViewMod
                             .padding(innerPadding)
                             .consumeWindowInsets(innerPadding)
                     ) {
-                        when (currentRoute) {
-                            CurioDestination.Bookmarks -> BookmarkFeedScreen(
-                                viewModel = bookmarkViewModel,
-                                tier = resolvedTier,
-                                onBookmarkClick = { activeReaderBookmark = it },
-                                onOpenMenu = { coroutineScope.launch { drawerState.open() } }
-                            )
-                            CurioDestination.Spaces -> CurioSpacesScreen(
-                                viewModel = bookmarkViewModel,
-                                tier = resolvedTier,
-                                onOpenSpace = { space ->
-                                    bookmarkViewModel.selectSpace(space.id)
-                                    currentRoute = CurioDestination.Bookmarks
-                                }
-                            )
-                            CurioDestination.Insights -> CurioInsightsScreen(
-                                viewModel = bookmarkViewModel,
-                                tier = resolvedTier,
-                                onNavigateToFeed = { currentRoute = CurioDestination.Bookmarks }
-                            )
-                            CurioDestination.Chat -> CurioChatScreen(
-                                viewModel = bookmarkViewModel,
-                                tier = resolvedTier
-                            )
-                            CurioDestination.Settings -> SettingsScreen(
-                                useDynamicColor = useDynamicColor,
-                                onToggleDynamicColor = { useDynamicColor = it },
-                                glassTierOverride = glassTierOverride,
-                                onSetGlassTierOverride = { glassTierOverride = it },
-                                resolvedTier = resolvedTier,
-                                onLogout = { authViewModel.onLogout() },
-                                viewModel = bookmarkViewModel
-                            )
+                        // Cross-dissolve between top-level screens instead of snapping instantly.
+                        // Honours the system reduce-motion setting (instant when animations are off).
+                        val screenAnim = androidx.compose.animation.core.tween<Float>(
+                            durationMillis = if (rememberReduceMotion()) 0 else 260,
+                            easing = androidx.compose.animation.core.FastOutSlowInEasing
+                        )
+                        androidx.compose.animation.Crossfade(
+                            targetState = currentRoute,
+                            animationSpec = screenAnim,
+                            label = "screenSwitch",
+                            modifier = Modifier.fillMaxSize()
+                        ) { route ->
+                            when (route) {
+                                CurioDestination.Bookmarks -> BookmarkFeedScreen(
+                                    viewModel = bookmarkViewModel,
+                                    tier = resolvedTier,
+                                    onBookmarkClick = { activeReaderBookmark = it },
+                                    onOpenMenu = { coroutineScope.launch { drawerState.open() } },
+                                    onNavigateToSettings = { currentRoute = CurioDestination.Settings },
+                                    loginSuccessMessage = loginSuccessMessage,
+                                    onDismissLoginSuccess = { authViewModel.clearLoginSuccess() }
+                                )
+                                CurioDestination.Spaces -> CurioSpacesScreen(
+                                    viewModel = bookmarkViewModel,
+                                    tier = resolvedTier,
+                                    onOpenSpace = { space ->
+                                        bookmarkViewModel.selectSpace(space.id)
+                                        currentRoute = CurioDestination.Bookmarks
+                                    }
+                                )
+                                CurioDestination.Insights -> CurioInsightsScreen(
+                                    viewModel = bookmarkViewModel,
+                                    tier = resolvedTier,
+                                    onNavigateToFeed = { currentRoute = CurioDestination.Bookmarks },
+                                    onNavigateToSettings = { currentRoute = CurioDestination.Settings }
+                                )
+                                CurioDestination.Chat -> CurioChatScreen(
+                                    viewModel = bookmarkViewModel,
+                                    tier = resolvedTier,
+                                    onNavigateToBookmarks = { currentRoute = CurioDestination.Bookmarks },
+                                    onNavigateToSettings = { currentRoute = CurioDestination.Settings }
+                                )
+                                CurioDestination.Settings -> SettingsScreen(
+                                    onLogout = { authViewModel.onLogout() },
+                                    viewModel = bookmarkViewModel
+                                )
+                            }
                         }
                     }
                 }
+                SnackbarHost(
+                    hostState = globalSnackbar,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 88.dp)
+                        .navigationBarsPadding()
+                )
             }
         }
     }
@@ -513,11 +574,21 @@ private fun DrawerNavRow(
             .height(48.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp),
+            .tappable(onClick = onClick)
+            .padding(start = if (selected) 0.dp else 12.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .fillMaxHeight(0.55f)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Spacer(Modifier.width(9.dp))
+        }
         Icon(icon, contentDescription = null, tint = contentTint)
         Text(
             label,
@@ -551,7 +622,7 @@ private fun XAccountCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .glassSurface(tier = tier, shape = RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .tappable(onClick = onClick)
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)

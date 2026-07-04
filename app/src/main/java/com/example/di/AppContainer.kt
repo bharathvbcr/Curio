@@ -15,6 +15,7 @@ import com.example.domain.repo.AuthRepository
 import com.example.domain.usecase.LoginUseCase
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import kotlinx.coroutines.cancel
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -25,6 +26,11 @@ class AppContainer(private val context: Context) {
 
     val tokenStore: TokenStore by lazy {
         TokenStore(context.applicationContext)
+    }
+
+    /** Hands bookmarks off to the ChronosFlow productivity app (read-later / inbox / task). */
+    val chronosFlowBridge: com.example.interop.ChronosFlowBridge by lazy {
+        com.example.interop.ChronosFlowBridge(context.applicationContext)
     }
 
     private val moshi: Moshi by lazy {
@@ -141,10 +147,19 @@ class AppContainer(private val context: Context) {
     }
     // Exposed directly so the charging-gated index worker can embed on-device ONLY (no cloud fallback).
     val onDeviceEmbeddingProvider: com.example.data.embedding.OnDeviceEmbeddingProvider by lazy {
-        com.example.data.embedding.OnDeviceEmbeddingProvider(embeddingAvailability, embeddingModelManager)
+        com.example.data.embedding.OnDeviceEmbeddingProvider(embeddingAvailability, embeddingModelManager).also {
+            // Drop the cached LiteRT interpreter when weights are deleted so the next embed doesn't
+            // touch stale native handles pointing at removed files.
+            embeddingModelManager.onDeleted = { it.release() }
+        }
     }
     val embeddingProvider: com.example.data.embedding.EmbeddingProvider by lazy {
-        com.example.data.embedding.EmbeddingProviderSelector(onDeviceEmbeddingProvider, embeddingService)
+        com.example.data.embedding.EmbeddingProviderSelector(
+            onDeviceEmbeddingProvider,
+            embeddingService,
+            // Read on every call so a Settings change applies immediately.
+            backend = { com.example.data.embedding.EmbeddingPreference.get(context.applicationContext) }
+        )
     }
 
     val arxivClient: ArxivClient by lazy { ArxivClient(metadataClient) }
@@ -171,6 +186,31 @@ class AppContainer(private val context: Context) {
         com.example.data.remote.FirebaseSyncManager(context.applicationContext)
     }
 
+    /**
+     * Application-lifetime scope for work that must outlive any screen/ViewModel — notably the
+     * unified notification collector. Cancelled in [close].
+     */
+    val applicationScope: kotlinx.coroutines.CoroutineScope by lazy {
+        kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default
+        )
+    }
+
+    /** Renders Curio's single unified live-activity notification and read-later reminders. */
+    val curioNotifier: com.example.notifications.CurioNotifier by lazy {
+        com.example.notifications.CurioNotifier(context.applicationContext)
+    }
+
+    /** Reduces every background source into that one notification. */
+    val curioActivityController: com.example.notifications.CurioActivityController by lazy {
+        com.example.notifications.CurioActivityController(applicationScope, curioNotifier)
+    }
+
+    /** Schedules Curio-owned read-later reminders (in-house, replacing the ChronosFlow-only path). */
+    val reminderScheduler: com.example.notifications.ReminderScheduler by lazy {
+        com.example.notifications.ReminderScheduler(context.applicationContext)
+    }
+
     private val xBookmarksApi: com.example.data.remote.XBookmarksApi by lazy {
         retrofit.create(com.example.data.remote.XBookmarksApi::class.java)
     }
@@ -187,5 +227,6 @@ class AppContainer(private val context: Context) {
      */
     fun close() {
         (bookmarkRepository as? com.example.data.repo.BookmarkRepositoryImpl)?.close()
+        applicationScope.cancel()
     }
 }

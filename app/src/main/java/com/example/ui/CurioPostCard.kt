@@ -62,7 +62,17 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.WatchLater
+import androidx.compose.material.icons.outlined.Workspaces
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -108,6 +118,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -140,7 +151,17 @@ import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
 import com.example.ui.theme.pressBounce
 import com.example.ui.theme.bounceScale
-import com.example.ui.theme.curioAccentBrush
+import com.example.ui.theme.rememberReduceMotion
+import com.example.ui.theme.minTouchTarget
+import com.example.ui.theme.tappable
+import com.example.ui.theme.CurioColors
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.layout.aspectRatio
@@ -168,6 +189,10 @@ import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AddTask
+import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.Schedule
+import com.example.interop.ChronosReminderChoice
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -178,6 +203,8 @@ internal fun CurioPostCard(
     actions: CurioCardActions,
     spaces: List<Space>,
     isProcessing: Boolean,
+    isAnalysisError: Boolean = false,
+    analysisErrorMessage: String? = null,
     isImagenGenerated: Boolean,
     imagenUrl: String?,
     tier: GlassTier,
@@ -187,7 +214,10 @@ internal fun CurioPostCard(
     isReorderMode: Boolean = false,
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {},
-    onBookmarkClick: () -> Unit = {}
+    onBookmarkClick: () -> Unit = {},
+    chronosFlowInstalled: Boolean = false,
+    /** Embedding-derived Space this unfiled card likely belongs in; shown as a tap-to-file pill. */
+    suggestedSpace: Space? = null
 ) {
     val context = LocalContext.current
     var isExpanded by remember { mutableStateOf(false) }
@@ -234,12 +264,7 @@ internal fun CurioPostCard(
     val currentSpace = remember(spaces, bookmark.spaceId) { spaces.firstOrNull { it.id == bookmark.spaceId } }
     val accent = currentSpace?.let { Color(it.color) }
         ?: if (!bookmark.category.isNullOrBlank()) getCategoryColor(bookmark.category) else MaterialTheme.colorScheme.primary
-    val srcColor = when (bookmark.sourceType) {
-        SourceType.ARXIV -> Color(0xFFE53935)
-        SourceType.GITHUB -> Color(0xFF66BB6A)
-        SourceType.HUGGING_FACE -> Color(0xFFFFB300)
-        else -> accent
-    }
+    val srcColor = CurioColors.sourceAccent(bookmark.sourceType, fallback = accent)
 
     val shareableText = remember(bookmark.isAnalyzed, bookmark.title, bookmark.category, bookmark.tags, bookmark.summary, bookmark.text) {
         if (bookmark.isAnalyzed) {
@@ -295,22 +320,37 @@ internal fun CurioPostCard(
                 horizontalArrangement = Arrangement.spacedBy(11.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                // Selection ring (always present for accessibility/tests)
+                // Selection ring (always present for accessibility/tests). The 20dp ring is the
+                // visual; the tap area is expanded to the 48dp minimum and exposes proper
+                // checkbox role + checked/unchecked state so TalkBack announces it correctly.
                 Box(
                     modifier = Modifier
-                        .size(20.dp)
-                        .bounceScale(isSelected)
-                        .border(
-                            width = 1.5.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = if (inSelectionMode) 0.4f else 0.18f),
-                            shape = CircleShape
+                        .minTouchTarget()
+                        .semantics { stateDescription = if (isSelected) "Selected" else "Not selected" }
+                        .toggleable(
+                            value = isSelected,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Checkbox,
+                            onValueChange = { onToggleSelect() }
                         )
-                        .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
-                        .clickable { onToggleSelect() }
                         .testTag("bookmark_select_checkbox_${bookmark.id}"),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isSelected) Icon(Icons.Default.Check, contentDescription = "Selected", modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .bounceScale(isSelected)
+                            .border(
+                                width = 1.5.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = if (inSelectionMode) 0.4f else 0.18f),
+                                shape = CircleShape
+                            )
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                    }
                 }
 
                 // Author avatar — gradient disc with a real-author initial or source glyph
@@ -350,23 +390,35 @@ internal fun CurioPostCard(
                         )
                         if (bookmark.isAnalyzed) {
                             Icon(Icons.Default.AutoAwesome, contentDescription = "AI curated", modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                        } else if (isProcessing) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                // Announce curation start/finish to TalkBack without stealing focus.
+                                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(11.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
+                                Text("Curating…", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
+                            }
                         }
                         Spacer(Modifier.weight(1f))
                         Text(
                             text = relativeTime(bookmark.createdAt),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        // Reorder / expand controls keep their small glyphs but restore the default
+                        // 48dp IconButton hit area (they were forced to 26dp — well under the minimum).
                         if (isReorderMode) {
-                            IconButton(onClick = onMoveUp, modifier = Modifier.size(26.dp).testTag("move_up_button_${bookmark.id}")) {
-                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            IconButton(onClick = onMoveUp, modifier = Modifier.testTag("move_up_button_${bookmark.id}")) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                             }
-                            IconButton(onClick = onMoveDown, modifier = Modifier.size(26.dp).testTag("move_down_button_${bookmark.id}")) {
-                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            IconButton(onClick = onMoveDown, modifier = Modifier.testTag("move_down_button_${bookmark.id}")) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                             }
                         } else {
-                            IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.size(26.dp).testTag("expand_button_${bookmark.id}")) {
-                                Icon(Icons.Default.ExpandMore, contentDescription = "Expand", modifier = Modifier.size(20.dp).rotate(chevronRotation), tint = MaterialTheme.colorScheme.primary)
+                            IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.testTag("expand_button_${bookmark.id}")) {
+                                Icon(Icons.Default.ExpandMore, contentDescription = if (isExpanded) "Collapse" else "Expand", modifier = Modifier.size(22.dp).rotate(chevronRotation), tint = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
@@ -381,10 +433,39 @@ internal fun CurioPostCard(
                             readingTime(bookmark.text)?.let { append("  ·  $it") }
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+
+            if (isAnalysisError && !analysisErrorMessage.isNullOrBlank()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassSurface(tier = tier, shape = RoundedCornerShape(12.dp), tint = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                    Text(
+                        analysisErrorMessage,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+                            .pressBounce { actions.onRunAiAnalysis() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .testTag("card_retry_curate_${bookmark.id}")
+                    ) {
+                        Text("Retry", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
 
@@ -429,9 +510,14 @@ internal fun CurioPostCard(
                                 .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                                 .testTag("post_image_${bookmark.id}"),
                             loading = {
-                                val infinite = rememberInfiniteTransition(label = "shimmer")
-                                val a by infinite.animateFloat(0.25f, 0.6f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "shimmerAlpha")
-                                Box(Modifier.fillMaxSize().background(srcColor.copy(alpha = a)))
+                                val reduceMotion = rememberReduceMotion()
+                                if (reduceMotion) {
+                                    Box(Modifier.fillMaxSize().background(srcColor.copy(alpha = 0.4f)))
+                                } else {
+                                    val infinite = rememberInfiniteTransition(label = "shimmer")
+                                    val a by infinite.animateFloat(0.25f, 0.6f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "shimmerAlpha")
+                                    Box(Modifier.fillMaxSize().background(srcColor.copy(alpha = a)))
+                                }
                             },
                             error = {
                                 CurioFallbackCover(bookmark, srcColor, accent, isExpanded)
@@ -439,7 +525,7 @@ internal fun CurioPostCard(
                         )
                         if (isExpanded && !bookmark.imageAltText.isNullOrBlank()) {
                             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                Text("ALT", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, fontSize = 9.sp), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 1.dp))
+                                Text("ALT", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 1.dp))
                                 Text(
                                     bookmark.imageAltText,
                                     style = MaterialTheme.typography.labelSmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
@@ -504,7 +590,7 @@ internal fun CurioPostCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text("View on X", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, fontSize = 10.sp))
+                            Text("View on X", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary))
                         }
                     }
                     if (currentSpace != null) {
@@ -519,7 +605,38 @@ internal fun CurioPostCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(spaceIcon(currentSpace.icon), contentDescription = null, modifier = Modifier.size(11.dp), tint = spColor)
-                            Text(currentSpace.name, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = spColor, fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(currentSpace.name, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = spColor), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    } else if (suggestedSpace != null) {
+                        // Unfiled, but the embedding auto-organiser thinks it belongs in an existing
+                        // Space (medium confidence) → suggest it; tap files via onAssignToSpace.
+                        val sugColor = Color(suggestedSpace.color)
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .border(1.dp, sugColor.copy(alpha = 0.5f), RoundedCornerShape(50))
+                                .pressBounce { actions.onAssignToSpace(suggestedSpace.id) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("suggest_semantic_${bookmark.id}"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(11.dp), tint = sugColor)
+                            Text(suggestedSpace.name, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = sugColor), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    } else if (!bookmark.isAnalyzed && !isProcessing) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                                .pressBounce { actions.onRunAiAnalysis() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("curate_chip_${bookmark.id}"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text("Curate", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary))
                         }
                     } else if (bookmark.isAnalyzed && !bookmark.category.isNullOrBlank()) {
                         // Unfiled but categorised → the AI category *suggests* a Space; tap to file it.
@@ -536,7 +653,7 @@ internal fun CurioPostCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(11.dp), tint = sugColor)
-                            Text(meta.name, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = sugColor, fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(meta.name, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = sugColor), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (bookmark.sourceType != null) {
@@ -545,8 +662,8 @@ internal fun CurioPostCard(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(sourceDisplayName(bookmark), style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = srcColor, fontSize = 10.sp))
-                            if (bookmark.referenceCount > 1) Text("×${bookmark.referenceCount}", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = srcColor, fontSize = 10.sp))
+                            Text(sourceDisplayName(bookmark), style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = srcColor))
+                            if (bookmark.referenceCount > 1) Text("×${bookmark.referenceCount}", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = srcColor))
                         }
                     }
                     if (!bookmark.summary.isNullOrBlank()) {
@@ -559,7 +676,7 @@ internal fun CurioPostCard(
                             imageVector = if (bookmark.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                             contentDescription = if (bookmark.isFavorite) "Unfavorite" else "Favorite",
                             modifier = Modifier.size(16.dp).bounceScale(bookmark.isFavorite),
-                            tint = if (bookmark.isFavorite) Color(0xFFFF5A6E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                            tint = if (bookmark.isFavorite) CurioColors.Favorite else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                         )
                     }
                     IconButton(onClick = { actions.onToggleSavedForLater() }, modifier = Modifier.size(48.dp).testTag("readlater_button_${bookmark.id}")) {
@@ -571,8 +688,8 @@ internal fun CurioPostCard(
                         )
                     }
                     // Hold the card or tap More to open the full action sheet (copy, share, curate, …)
-                    IconButton(onClick = { showOptions = true }, modifier = Modifier.size(30.dp).testTag("card_more_button_${bookmark.id}")) {
-                        Icon(Icons.Default.MoreHoriz, contentDescription = "More options", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+                    IconButton(onClick = { showOptions = true }, modifier = Modifier.testTag("card_more_button_${bookmark.id}")) {
+                        Icon(Icons.Default.MoreHoriz, contentDescription = "More options", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
                     }
                 }
             }
@@ -588,7 +705,7 @@ internal fun CurioPostCard(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
-                                .clickable { openUrl(context, bookmark.url) }
+                                .tappable { openUrl(context, bookmark.url) }
                                 .padding(horizontal = 10.dp, vertical = 9.dp)
                                 .testTag("open_link_row_${bookmark.id}"),
                             verticalAlignment = Alignment.CenterVertically,
@@ -623,7 +740,7 @@ internal fun CurioPostCard(
                     // Personal note: shows the note if present (tap to edit), else a subtle "add note" row.
                     val noteAccent = MaterialTheme.colorScheme.tertiary
                     if (!bookmark.notes.isNullOrBlank()) {
-                        Box(modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { showNotesEditor = true }.testTag("note_panel_${bookmark.id}")) {
+                        Box(modifier = Modifier.clip(RoundedCornerShape(12.dp)).tappable { showNotesEditor = true }.testTag("note_panel_${bookmark.id}")) {
                             DetailPanel("MY NOTE", bookmark.notes, noteAccent)
                         }
                     } else {
@@ -632,7 +749,7 @@ internal fun CurioPostCard(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(noteAccent.copy(alpha = 0.06f))
-                                .clickable { showNotesEditor = true }
+                                .tappable { showNotesEditor = true }
                                 .padding(horizontal = 10.dp, vertical = 9.dp)
                                 .testTag("add_note_row_${bookmark.id}"),
                             verticalAlignment = Alignment.CenterVertically,
@@ -656,7 +773,7 @@ internal fun CurioPostCard(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
-                            .clickable { showOptions = true }
+                            .tappable { showOptions = true }
                             .padding(horizontal = 12.dp, vertical = 9.dp)
                             .testTag("card_actions_row_${bookmark.id}"),
                         verticalAlignment = Alignment.CenterVertically,
@@ -679,6 +796,7 @@ internal fun CurioPostCard(
             isProcessing = isProcessingThisCard,
             shareableText = shareableText,
             tweetLink = tweetLink,
+            chronosFlowInstalled = chronosFlowInstalled,
             onOcr = { imageLauncher.launch("image/*") },
             onSelect = onToggleSelect,
             onReader = onBookmarkClick,
@@ -753,6 +871,10 @@ internal data class CurioCardActions(
     val onResolveSource: () -> Unit,
     val exportBibtex: () -> String?,
     val onDelete: () -> Unit,
+    // ChronosFlow productivity handoff (only invoked when ChronosFlow is installed).
+    val onRemindInChronosFlow: (com.example.interop.ChronosReminderChoice) -> Unit = {},
+    val onCaptureToChronosFlow: () -> Unit = {},
+    val onCreateChronosFlowTask: () -> Unit = {},
 )
 
 /** A single tappable action inside [CardOptionsSheet]. */
@@ -776,6 +898,7 @@ private fun CardOptionsSheet(
     isProcessing: Boolean,
     shareableText: String,
     tweetLink: String?,
+    chronosFlowInstalled: Boolean,
     onOcr: () -> Unit,
     onSelect: () -> Unit,
     onReader: () -> Unit,
@@ -803,32 +926,29 @@ private fun CardOptionsSheet(
     // because the sheet is only shown while the bookmark is unchanged.
     val bibtexText = remember(bookmark.id, bookmark.sourceType) { actions.exportBibtex() }
 
-    // Secondary actions laid out as a two-column grid of tiles.
-    val tiles = buildList {
-        add(CardAction("Copy", Icons.Filled.ContentCopy, cs.onSurface.copy(alpha = 0.7f)) { copyToClipboard(context, shareableText) })
-        add(CardAction("Share", Icons.Filled.Share, cs.onSurface.copy(alpha = 0.7f)) { shareBookmark(context, shareableText) })
+    // Secondary actions grouped into scannable list sections.
+    val curateActions = buildList {
         if (!isProcessing) {
             add(CardAction(if (bookmark.isAnalyzed) "Re-curate" else "AI Curate", if (bookmark.isAnalyzed) Icons.Default.Autorenew else Icons.Default.Psychology, cs.primary) { actions.onRunAiAnalysis() })
         }
-        add(CardAction(if (bookmark.isDeepAnalyzed) "Reanalyze+" else "Deep", Icons.Default.AutoAwesome, cs.tertiary) { actions.onRunDeepAnalysis() })
-        add(CardAction(if (!bookmark.ocrText.isNullOrBlank()) "Update image" else "OCR shot", Icons.Default.Screenshot, cs.secondary, onOcr))
+        add(CardAction(if (bookmark.isDeepAnalyzed) "Reanalyze+" else "Deep analyze", Icons.Default.AutoAwesome, cs.tertiary) { actions.onRunDeepAnalysis() })
+        add(CardAction(if (!bookmark.ocrText.isNullOrBlank()) "Update image text" else "Scan image (OCR)", Icons.Default.Screenshot, cs.secondary, onOcr))
+    }
+    val moreActions = buildList {
+        add(CardAction("Share", Icons.Outlined.Share, cs.onSurface.copy(alpha = 0.7f)) { shareBookmark(context, shareableText) })
+        add(CardAction("Reader view", Icons.AutoMirrored.Filled.MenuBook, cs.primary, onReader))
+        add(CardAction(if (!bookmark.notes.isNullOrBlank()) "Edit note" else "Add note", Icons.Outlined.Edit, cs.tertiary, onNotes))
         if (bookmark.sourceType == null) {
-            add(CardAction("Resolve source", Icons.Default.Link, cs.secondary) { actions.onResolveSource() })
+            add(CardAction("Resolve source", Icons.Outlined.Link, cs.secondary) { actions.onResolveSource() })
         }
         if (bookmark.sourceType == SourceType.ARXIV) {
             bibtexText?.let { bib ->
-                add(CardAction("BibTeX", Icons.Default.ContentCopy, Color(0xFFE53935)) { copyToClipboard(context, bib, "BibTeX") })
+                add(CardAction("Copy BibTeX", Icons.Outlined.ContentCopy, Color(0xFFE53935)) { copyToClipboard(context, bib, "BibTeX") })
             }
         }
         if (tweetLink != null) {
             add(CardAction("View on X", Icons.Default.OpenInNew, cs.primary) { openUrl(context, tweetLink) })
         }
-        if (!bookmark.url.isNullOrBlank()) {
-            add(CardAction("Open link", Icons.Default.Link, cs.secondary) { openUrl(context, bookmark.url) })
-        }
-        add(CardAction("Reader", Icons.AutoMirrored.Filled.MenuBook, cs.primary, onReader))
-        add(CardAction(if (bookmark.spaceId != null) "Change space" else "Add to space", Icons.Filled.Workspaces, cs.tertiary, onMoveToSpace))
-        add(CardAction(if (!bookmark.notes.isNullOrBlank()) "Edit note" else "Add note", Icons.Filled.Edit, cs.tertiary, onNotes))
     }
 
     ModalBottomSheet(
@@ -843,44 +963,56 @@ private fun CardOptionsSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            // ── Header: what you're acting on ──
-            Text(
-                text = "${sourceDisplayName(bookmark)} · ${relativeTime(bookmark.createdAt)}",
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp),
-                color = cs.primary
-            )
-            Text(
-                text = bookmark.title?.takeIf { it.isNotBlank() } ?: cleanSnippet(bookmark.text),
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, lineHeight = 22.sp),
-                color = cs.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            SheetDivider()
+            SheetHeader(bookmark)
+            SheetDivider(Modifier.padding(vertical = 4.dp))
 
-            // ── Frequent toggles ──
-            SheetToggleRow("Favorite", "Favorited", Icons.Filled.Favorite, Icons.Filled.FavoriteBorder, bookmark.isFavorite, Color(0xFFFF5A6E)) { act { actions.onToggleFavorite() } }
-            SheetToggleRow("Save for later", "Saved for later", Icons.Filled.WatchLater, Icons.Filled.WatchLater, bookmark.isSavedForLater, cs.secondary) { act { actions.onToggleSavedForLater() } }
-            SheetDivider()
+            SheetQuickIconRow(
+                bookmark = bookmark,
+                onCopy = { act { copyToClipboard(context, shareableText) } },
+                onFavorite = { actions.onToggleFavorite() },
+                onReadLater = { actions.onToggleSavedForLater() },
+                onChangeSpace = { act(onMoveToSpace) },
+                onOpenLink = bookmark.url?.takeIf { it.isNotBlank() }?.let { url -> { act { openUrl(context, url) } } },
+            )
 
-            // ── Tools / links ──
-            if (isProcessing) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = cs.primary)
-                    Text("Curating…", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = cs.onSurface)
+            if (curateActions.isNotEmpty()) {
+                SheetDivider(Modifier.padding(vertical = 8.dp))
+                SheetSectionLabel("CURATE")
+                if (isProcessing) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = cs.primary)
+                        Text("Curating…", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = cs.onSurface.copy(alpha = 0.7f))
+                    }
+                }
+                curateActions.forEach { a ->
+                    SheetListRow(a) { act(a.onClick) }
                 }
             }
-            tiles.chunked(2).forEach { pair ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    pair.forEach { a -> SheetActionTile(a, Modifier.weight(1f)) { act(a.onClick) } }
-                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+
+            if (moreActions.isNotEmpty()) {
+                SheetDivider(Modifier.padding(vertical = 8.dp))
+                SheetSectionLabel("MORE")
+                moreActions.forEach { a ->
+                    SheetListRow(a) { act(a.onClick) }
                 }
             }
-            SheetDivider()
 
-            // ── Select (enter multi-select) · Delete ──
+            if (chronosFlowInstalled) {
+                SheetDivider(Modifier.padding(vertical = 8.dp))
+                ChronosFlowActions(
+                    onRemind = { choice -> act { actions.onRemindInChronosFlow(choice) } },
+                    onCapture = { act { actions.onCaptureToChronosFlow() } },
+                    onCreateTask = { act { actions.onCreateChronosFlowTask() } },
+                )
+            }
+
+            SheetDivider(Modifier.padding(vertical = 8.dp))
             // Delete is two-step: the first tap arms an inline confirm so a stray
             // tap in the menu can't quietly drop a card.
             if (confirmingDelete) {
@@ -900,86 +1032,265 @@ private fun CardOptionsSheet(
                     Text(
                         "CANCEL",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
-                        color = cs.onSurface.copy(alpha = 0.6f),
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { confirmingDelete = false }.padding(horizontal = 12.dp, vertical = 8.dp)
+                        color = cs.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).tappable { confirmingDelete = false }.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                     Text(
                         "DELETE",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
                         color = cs.error,
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(cs.error.copy(alpha = 0.16f)).clickable { act { actions.onDelete() } }.padding(horizontal = 14.dp, vertical = 8.dp).testTag("sheet_delete_confirm_button_${bookmark.id}")
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(cs.error.copy(alpha = 0.16f)).tappable { act { actions.onDelete() } }.padding(horizontal = 14.dp, vertical = 8.dp).testTag("sheet_delete_confirm_button_${bookmark.id}")
                     )
                 }
             } else {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SheetActionTile(CardAction("Select", Icons.Default.Check, cs.onSurface.copy(alpha = 0.7f)) {}, Modifier.weight(1f)) { act(onSelect) }
-                    SheetActionTile(CardAction("Delete", Icons.Default.Delete, cs.error) {}, Modifier.weight(1f)) { confirmingDelete = true }
-                }
+                SheetFooterRow(
+                    onSelect = { act(onSelect) },
+                    onDelete = { confirmingDelete = true },
+                )
             }
         }
+    }
+}
+
+/**
+ * ChronosFlow productivity actions inside the options sheet: save the bookmark to ChronosFlow's
+ * reading list with an optional "remind me to read later" time, drop it into the inbox, or turn it
+ * into a follow-up task. The reminder row expands to a small set of preset times (the app has no
+ * time picker). Shown only when ChronosFlow is installed.
+ */
+@Composable
+private fun ChronosFlowActions(
+    onRemind: (ChronosReminderChoice) -> Unit,
+    onCapture: () -> Unit,
+    onCreateTask: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    var remindExpanded by remember { mutableStateOf(false) }
+
+    Text(
+        "CHRONOSFLOW",
+        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 0.6.sp),
+        color = cs.primary
+    )
+    ChronosRow(Icons.Filled.Schedule, "Remind me to read later", cs.secondary) { remindExpanded = !remindExpanded }
+    if (remindExpanded) {
+        ChronosReminderChoice.entries.forEach { choice ->
+            Text(
+                text = choice.label,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = cs.onSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .tappable { onRemind(choice) }
+                    .padding(start = 38.dp, top = 10.dp, bottom = 10.dp, end = 12.dp)
+            )
+        }
+    }
+    ChronosRow(Icons.Filled.Inbox, "Capture to ChronosFlow inbox", cs.tertiary, onCapture)
+    ChronosRow(Icons.Filled.AddTask, "Create ChronosFlow task", cs.primary, onCreateTask)
+}
+
+@Composable
+private fun ChronosRow(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .tappable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 
 private val sheetDividerAlpha = 0.08f
 
 @Composable
-private fun SheetDivider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = sheetDividerAlpha)))
-}
-
-/** Full-width toggle row (favorite / save) that reflects its on/off state. */
-@Composable
-private fun SheetToggleRow(
-    label: String,
-    activeLabel: String,
-    activeIcon: ImageVector,
-    inactiveIcon: ImageVector,
-    active: Boolean,
-    activeTint: Color,
-    onClick: () -> Unit
-) {
-    val tint = if (active) activeTint else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+private fun SheetHeader(bookmark: Bookmark) {
+    val cs = MaterialTheme.colorScheme
+    val accent = CurioColors.sourceAccent(bookmark.sourceType)
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 12.dp)
-            .testTag("sheet_toggle_${label}"),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Icon(if (active) activeIcon else inactiveIcon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp).bounceScale(active))
-        Text(
-            text = if (active) activeLabel else label,
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.onSurface
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(accent),
         )
-        Spacer(Modifier.weight(1f))
-        if (active) Icon(Icons.Default.Check, contentDescription = null, tint = activeTint, modifier = Modifier.size(18.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "${sourceDisplayName(bookmark)} · ${relativeTime(bookmark.createdAt)}",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp),
+                color = cs.primary,
+            )
+            Text(
+                text = bookmark.title?.takeIf { it.isNotBlank() } ?: cleanSnippet(bookmark.text),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black, lineHeight = 22.sp),
+                color = cs.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
-/** A tinted tile in the two-column action grid. */
 @Composable
-private fun SheetActionTile(action: CardAction, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun SheetSectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 0.8.sp),
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+    )
+}
+
+@Composable
+private fun SheetDivider(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = sheetDividerAlpha)))
+}
+
+/** Icon-only quick actions row using outlined icons. Toggles stay in-sheet; navigational actions dismiss. */
+@Composable
+private fun SheetQuickIconRow(
+    bookmark: Bookmark,
+    onCopy: () -> Unit,
+    onFavorite: () -> Unit,
+    onReadLater: () -> Unit,
+    onChangeSpace: () -> Unit,
+    onOpenLink: (() -> Unit)?,
+) {
+    val cs = MaterialTheme.colorScheme
+    val favoriteTint = if (bookmark.isFavorite) CurioColors.Favorite else cs.onSurface.copy(alpha = 0.7f)
+    val favoriteIcon = if (bookmark.isFavorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder
+    val readLaterTint = if (bookmark.isSavedForLater) cs.secondary else cs.onSurface.copy(alpha = 0.7f)
     Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(action.tint.copy(alpha = 0.12f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 13.dp)
-            .testTag("sheet_action_${action.label}"),
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Icon(action.icon, contentDescription = null, tint = action.tint, modifier = Modifier.size(18.dp))
+        SheetIconButton(Icons.Outlined.ContentCopy, "Copy", cs.onSurface.copy(alpha = 0.7f), onCopy, Modifier.weight(1f))
+        SheetIconButton(favoriteIcon, if (bookmark.isFavorite) "Unfavorite" else "Favorite", favoriteTint, onFavorite, Modifier.weight(1f), bookmark.isFavorite)
+        SheetIconButton(Icons.Outlined.WatchLater, if (bookmark.isSavedForLater) "Remove from read later" else "Save for later", readLaterTint, onReadLater, Modifier.weight(1f), bookmark.isSavedForLater)
+        SheetIconButton(
+            Icons.Outlined.Workspaces,
+            if (!bookmark.spaceId.isNullOrBlank()) "Change space" else "Add to space",
+            cs.tertiary,
+            onChangeSpace,
+            Modifier.weight(1f),
+        )
+        if (onOpenLink != null) {
+            SheetIconButton(Icons.Outlined.Link, "Open link", cs.secondary, onOpenLink, Modifier.weight(1f))
+        }
+    }
+}
+
+/** A single icon-only button in [SheetQuickIconRow]. */
+@Composable
+private fun SheetIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+) {
+    Box(
+        modifier = modifier
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(tint.copy(alpha = if (active) 0.18f else 0.10f))
+            .then(
+                if (active) Modifier.border(1.dp, tint.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                else Modifier
+            )
+            .tappable(onClick = onClick)
+            .testTag("sheet_icon_$contentDescription"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(22.dp).bounceScale(active),
+        )
+    }
+}
+
+/** Full-width list row for secondary sheet actions. */
+@Composable
+private fun SheetListRow(action: CardAction, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .tappable(onClick = onClick)
+            .padding(vertical = 11.dp, horizontal = 4.dp)
+            .testTag("sheet_row_${action.label}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(action.icon, contentDescription = null, tint = action.tint, modifier = Modifier.size(20.dp))
         Text(
             text = action.label,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-            color = action.tint,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = cs.onSurface,
+            modifier = Modifier.weight(1f),
         )
+        Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            tint = cs.onSurface.copy(alpha = 0.25f),
+            modifier = Modifier.size(18.dp).rotate(-90f),
+        )
+    }
+}
+
+/** Compact footer for multi-select entry and destructive delete. */
+@Composable
+private fun SheetFooterRow(onSelect: () -> Unit, onDelete: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(14.dp))
+                .background(cs.onSurface.copy(alpha = 0.06f))
+                .tappable(onClick = onSelect)
+                .padding(vertical = 13.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Check, contentDescription = null, tint = cs.onSurface.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Select", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = cs.onSurface.copy(alpha = 0.7f))
+        }
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(14.dp))
+                .background(cs.error.copy(alpha = 0.08f))
+                .tappable(onClick = onDelete)
+                .padding(vertical = 13.dp)
+                .testTag("sheet_delete_button"),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Delete, contentDescription = null, tint = cs.error, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Delete", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = cs.error)
+        }
     }
 }

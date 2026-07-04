@@ -32,3 +32,7 @@ __pycache__/
 
 # Internal planning / checklist docs (not for public repo)
 CURIO_FEATURE_CHECKLIST.md
+*.log
+*.tmp
+*.dump
+*.dmp

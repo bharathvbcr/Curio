@@ -3,6 +3,7 @@ package com.example.data.remote
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 
@@ -284,6 +285,26 @@ data class XAiEmbeddingResponse(
     @Json(name = "data") val data: List<XAiEmbeddingData>? = null
 )
 
+/**
+ * Response of GET /v1/embedding-models. xAI has used both `{"models":[…]}` and an OpenAI-style
+ * `{"data":[…]}` envelope across surfaces, so accept either; an entry may name itself `id` or `name`.
+ */
+@JsonClass(generateAdapter = true)
+data class XAiEmbeddingModelsResponse(
+    @Json(name = "models") val models: List<XAiModelEntry>? = null,
+    @Json(name = "data") val data: List<XAiModelEntry>? = null
+) {
+    /** First usable embedding-model id, or null if the account has none. */
+    fun firstModelId(): String? =
+        (models.orEmpty() + data.orEmpty()).firstNotNullOfOrNull { it.id ?: it.name }
+}
+
+@JsonClass(generateAdapter = true)
+data class XAiModelEntry(
+    @Json(name = "id") val id: String? = null,
+    @Json(name = "name") val name: String? = null
+)
+
 // ---------------------------------------------------------------------------
 // Image generation
 // ---------------------------------------------------------------------------
@@ -309,6 +330,21 @@ data class XAiImageData(
 @JsonClass(generateAdapter = true)
 data class XAiImageResponse(
     @Json(name = "data") val data: List<XAiImageData>? = null
+)
+
+// ---------------------------------------------------------------------------
+// API key introspection — GET /v1/api-key returns metadata about the bearer
+// key itself (no tokens consumed). Used to verify a user-pasted BYOK key is
+// actually live, not just syntactically present.
+// ---------------------------------------------------------------------------
+
+@JsonClass(generateAdapter = true)
+data class XAiApiKeyInfo(
+    @Json(name = "redacted_api_key") val redactedApiKey: String? = null,
+    @Json(name = "name") val name: String? = null,
+    @Json(name = "api_key_blocked") val apiKeyBlocked: Boolean? = null,
+    @Json(name = "api_key_disabled") val apiKeyDisabled: Boolean? = null,
+    @Json(name = "team_blocked") val teamBlocked: Boolean? = null
 )
 
 // ---------------------------------------------------------------------------
@@ -340,4 +376,20 @@ interface XAiApi {
         @Header("Authorization") authorization: String,
         @Body request: XAiImageRequest
     ): XAiImageResponse
+
+    /** Key introspection: cheap liveness check for the bearer key (consumes no tokens). */
+    @GET("v1/api-key")
+    suspend fun getApiKeyInfo(
+        @Header("Authorization") authorization: String
+    ): XAiApiKeyInfo
+
+    /**
+     * Lists the embedding models provisioned for the authenticating key/team. xAI does not ship a
+     * fixed public embedding model name — availability is per-account — so we discover it at runtime
+     * instead of hardcoding one that may 404. An empty list means the account has no embedder.
+     */
+    @GET("v1/embedding-models")
+    suspend fun listEmbeddingModels(
+        @Header("Authorization") authorization: String
+    ): XAiEmbeddingModelsResponse
 }

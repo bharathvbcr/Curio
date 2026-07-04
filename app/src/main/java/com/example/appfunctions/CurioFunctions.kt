@@ -8,6 +8,7 @@ import com.example.data.export.BibtexExporter
 import com.example.data.remote.TokenStore
 import com.example.domain.model.Bookmark
 import com.example.domain.repo.BookmarkRepository
+import com.example.interop.ChronosFlowBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -34,32 +35,29 @@ import java.time.Instant
 class CurioFunctions(
     private val bookmarkRepository: BookmarkRepository,
     private val tokenStore: TokenStore,
+    private val chronosFlowBridge: ChronosFlowBridge,
 ) {
-
-    /**
-     * On-device AI agents and system assistants that are permitted to invoke write or
-     * detail-level read functions. Read-only discovery functions (searchBookmarks) do not
-     * enforce this check.
-     */
-    private val ALLOWED_CALLERS = setOf(
-        "com.google.android.as",
-        "com.android.systemui",
-        "com.google.android.googlequicksearchbox"
-    )
-
-    private fun requireAllowedCaller(appFunctionContext: AppFunctionContext) {
-        if (appFunctionContext.callingPackageName !in ALLOWED_CALLERS) {
-            throw AppFunctionDeniedException(
-                "Caller '${appFunctionContext.callingPackageName}' is not permitted to invoke this function."
-            )
-        }
-    }
 
     private suspend fun requireUserId(): String =
         tokenStore.userIdFlow.first()
             ?: throw AppFunctionDeniedException(
                 "Not signed in. Open the Curio app and sign in with X to use these functions."
             )
+
+    /**
+     * Gate for the write functions (add bookmark / add note / toggle favourite). alpha09 does not
+     * expose the calling package to function code, so a per-caller allowlist isn't possible; this
+     * user-controlled toggle (Settings → "Allow assistants to modify my bookmarks") is the
+     * available defence. Read-only discovery/detail functions are intentionally not gated.
+     */
+    private suspend fun requireAgentWritesAllowed() {
+        if (!tokenStore.isAgentWritesAllowed()) {
+            throw AppFunctionDeniedException(
+                "Assistant modifications are turned off. Enable “Allow assistants to modify my " +
+                    "bookmarks” in Curio Settings to use this function."
+            )
+        }
+    }
 
     private fun Bookmark.toSummary() = BookmarkSummary(
         id = id,
@@ -136,7 +134,7 @@ class CurioFunctions(
         appFunctionContext: AppFunctionContext,
         text: String,
     ): BookmarkSummary = withContext(Dispatchers.IO) {
-        requireAllowedCaller(appFunctionContext)
+        requireAgentWritesAllowed()
         val userId = requireUserId()
         bookmarkRepository.addBookmark(userId, text)
             .getOrElse {
@@ -159,7 +157,7 @@ class CurioFunctions(
         appFunctionContext: AppFunctionContext,
         bookmarkId: String,
     ): BookmarkDetail? = withContext(Dispatchers.IO) {
-        requireAllowedCaller(appFunctionContext)
+        requireUserId()
         bookmarkRepository.getBookmarkById(bookmarkId)?.toDetail()
     }
 
@@ -179,7 +177,7 @@ class CurioFunctions(
         bookmarkId: String,
         note: String,
     ): BookmarkSummary? = withContext(Dispatchers.IO) {
-        requireAllowedCaller(appFunctionContext)
+        requireAgentWritesAllowed()
         val stored = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
         bookmarkRepository.updateNotes(bookmarkId, note.takeIf { it.isNotBlank() })
         stored.copy(notes = note.takeIf { it.isNotBlank() }).toSummary()
@@ -201,7 +199,7 @@ class CurioFunctions(
         bookmarkId: String,
         favorite: Boolean = true,
     ): BookmarkSummary? = withContext(Dispatchers.IO) {
-        requireAllowedCaller(appFunctionContext)
+        requireAgentWritesAllowed()
         val stored = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
         bookmarkRepository.setFavorite(bookmarkId, favorite)
         stored.copy(isFavorite = favorite).toSummary()
@@ -225,5 +223,128 @@ class CurioFunctions(
     ): String? = withContext(Dispatchers.IO) {
         val bookmark = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
         BibtexExporter.toBibtex(bookmark)
+    }
+
+    // ── ChronosFlow handoff (productivity integration) ───────────────────────
+    // These hand a saved bookmark off to the companion ChronosFlow planner app. They require
+    // ChronosFlow to be installed; ChronosFlow itself verifies Curio's signature before accepting.
+
+    private fun Bookmark.bestUrl(): String? =
+        url?.takeIf { it.isNotBlank() } ?: text.takeIf { it.isNotBlank() }
+
+    private fun Bookmark.bestTitle(): String? =
+        (sourceTitle ?: title)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Save a bookmark to ChronosFlow's reading list ("remind me to read later").
+     *
+     * The bookmark's link is added to the ChronosFlow planner's reading list. When
+     * [remindInMinutes] is provided, ChronosFlow also schedules a reminder notification that many
+     * minutes from now (e.g. 60 for "in an hour", 1440 for "tomorrow").
+     * Required workflow: Call searchBookmarks first to obtain a valid bookmarkId.
+     *
+     * @param appFunctionContext The execution context.
+     * @param bookmarkId The unique identifier returned by searchBookmarks.
+     * @param remindInMinutes Optional minutes from now to fire a read-later reminder. Pass null for no reminder.
+     * @return The handoff outcome, or null if the bookmarkId is not found.
+     */
+    @AppFunction(isDescribedByKDoc = true)
+    suspend fun remindToReadLater(
+        appFunctionContext: AppFunctionContext,
+        bookmarkId: String,
+        remindInMinutes: Int? = null,
+    ): ChronosHandoffResult? = withContext(Dispatchers.IO) {
+        requireAgentWritesAllowed()
+        requireChronosFlow()
+        val bookmark = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
+        val url = bookmark.bestUrl()
+            ?: return@withContext ChronosHandoffResult(false, "This bookmark has no link to read later.", null)
+        val reminderAt = remindInMinutes
+            ?.takeIf { it > 0 }
+            ?.let { System.currentTimeMillis() + it.toLong() * 60_000L }
+        chronosFlowBridge.sendToReadingList(
+            url = url,
+            title = bookmark.bestTitle(),
+            reminderAtEpochMillis = reminderAt,
+            notes = bookmark.notes,
+        ).fold(
+            onSuccess = {
+                ChronosHandoffResult(
+                    success = true,
+                    message = if (reminderAt != null) "Saved to ChronosFlow reading list with a reminder."
+                    else "Saved to ChronosFlow reading list.",
+                    reminderAt = reminderAt?.let { Instant.ofEpochMilli(it).toString() },
+                )
+            },
+            onFailure = { ChronosHandoffResult(false, "ChronosFlow declined the item: ${it.message}", null) },
+        )
+    }
+
+    /**
+     * Capture a bookmark into ChronosFlow's quick-capture inbox for later triage.
+     *
+     * Required workflow: Call searchBookmarks first to obtain a valid bookmarkId.
+     *
+     * @param appFunctionContext The execution context.
+     * @param bookmarkId The unique identifier returned by searchBookmarks.
+     * @return The handoff outcome, or null if the bookmarkId is not found.
+     */
+    @AppFunction(isDescribedByKDoc = true)
+    suspend fun captureToChronosInbox(
+        appFunctionContext: AppFunctionContext,
+        bookmarkId: String,
+    ): ChronosHandoffResult? = withContext(Dispatchers.IO) {
+        requireAgentWritesAllowed()
+        requireChronosFlow()
+        val bookmark = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
+        val text = listOfNotNull(bookmark.bestTitle(), bookmark.bestUrl() ?: bookmark.text)
+            .distinct()
+            .joinToString("\n")
+            .ifBlank { bookmark.text }
+        chronosFlowBridge.captureToInbox(text).fold(
+            onSuccess = { ChronosHandoffResult(true, "Captured to ChronosFlow inbox.", null) },
+            onFailure = { ChronosHandoffResult(false, "ChronosFlow declined the item: ${it.message}", null) },
+        )
+    }
+
+    /**
+     * Create a follow-up task in ChronosFlow from a bookmark (e.g. "follow up on this paper").
+     *
+     * Required workflow: Call searchBookmarks first to obtain a valid bookmarkId.
+     *
+     * @param appFunctionContext The execution context.
+     * @param bookmarkId The unique identifier returned by searchBookmarks.
+     * @param title Optional task title. Defaults to the bookmark's title/source title when omitted.
+     * @return The handoff outcome, or null if the bookmarkId is not found.
+     */
+    @AppFunction(isDescribedByKDoc = true)
+    suspend fun createChronosTask(
+        appFunctionContext: AppFunctionContext,
+        bookmarkId: String,
+        title: String? = null,
+    ): ChronosHandoffResult? = withContext(Dispatchers.IO) {
+        requireAgentWritesAllowed()
+        requireChronosFlow()
+        val bookmark = bookmarkRepository.getBookmarkById(bookmarkId) ?: return@withContext null
+        val taskTitle = title?.trim()?.takeIf { it.isNotEmpty() }
+            ?: bookmark.bestTitle()
+            ?: bookmark.text.take(80)
+        chronosFlowBridge.createTask(
+            title = taskTitle,
+            notes = bookmark.summary ?: bookmark.notes,
+            url = bookmark.bestUrl(),
+        ).fold(
+            onSuccess = { ChronosHandoffResult(true, "Created a task in ChronosFlow.", null) },
+            onFailure = { ChronosHandoffResult(false, "ChronosFlow declined the item: ${it.message}", null) },
+        )
+    }
+
+    private fun requireChronosFlow() {
+        if (!chronosFlowBridge.isAvailable()) {
+            throw AppFunctionDeniedException(
+                "ChronosFlow is not installed. Install the ChronosFlow planner app to save reminders, " +
+                    "inbox captures, and tasks from Curio."
+            )
+        }
     }
 }

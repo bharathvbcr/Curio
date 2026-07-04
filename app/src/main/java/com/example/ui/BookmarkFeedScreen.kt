@@ -82,6 +82,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,6 +114,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -116,6 +124,7 @@ import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Workspaces
 import android.content.Intent
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.MainActivity
 import com.example.data.embedding.EmbeddingModelManager
@@ -127,9 +136,15 @@ import com.example.ui.components.GlassNavigationItem
 import com.example.ui.components.GlassScaffold
 import com.example.ui.components.GlassTopBar
 import com.example.ui.components.LiquidGlassFab
+import com.example.ui.components.CurioSkeletonList
 import com.example.ui.screens.auth.AuthViewModel
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.theme.BookmarkTheme
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import com.example.ui.theme.GlassTier
 import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
@@ -137,6 +152,11 @@ import com.example.ui.theme.CurioMotion
 import com.example.ui.theme.pressBounce
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.curioAccentBrush
+import com.example.ui.theme.tappable
+import com.example.ui.theme.minTouchTarget
+import com.example.ui.theme.CurioColors
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.layout.aspectRatio
@@ -173,11 +193,15 @@ internal fun BookmarkFeedScreen(
     viewModel: BookmarkViewModel,
     tier: GlassTier,
     onBookmarkClick: (Bookmark) -> Unit,
-    onOpenMenu: () -> Unit = {}
+    onOpenMenu: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {},
+    loginSuccessMessage: String? = null,
+    onDismissLoginSuccess: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val xaiKeyConfigured by viewModel.xaiKeyConfigured.collectAsStateWithLifecycle()
     val forceLocalNano by viewModel.forceLocalNano.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     // Collected ONCE here (not per card) so a single card's processing/imagen change no longer
@@ -193,6 +217,7 @@ internal fun BookmarkFeedScreen(
     val embeddingModelState by viewModel.embeddingModelState.collectAsStateWithLifecycle()
     val quickFilter by viewModel.quickFilter.collectAsStateWithLifecycle()
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
+    val spaceSuggestions by viewModel.spaceSuggestions.collectAsStateWithLifecycle()
     val selectedSpaceId by viewModel.selectedSpaceId.collectAsStateWithLifecycle()
     val activeSpace = remember(spaces, selectedSpaceId) { spaces.firstOrNull { it.id == selectedSpaceId } }
 
@@ -205,6 +230,50 @@ internal fun BookmarkFeedScreen(
     var showModelDialog by remember { mutableStateOf(false) }
     val isSyncing = syncState is SyncUiState.Loading
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    // Delete now, offer Undo. The bookmarks flow is Room-backed, so both the delete and the
+    // restore re-emit — the card animates out and (on Undo) back in. We keep the captured
+    // Bookmark objects so the restore is verbatim (analysis, tags, Space, favorite all preserved).
+    val deleteWithUndo: (List<Bookmark>) -> Unit = { toDelete ->
+        if (toDelete.isNotEmpty()) {
+            viewModel.deleteBookmarks(toDelete.map { it.id })
+            scope.launch {
+                val result = snackbarHostState.showSnackbar(
+                    message = if (toDelete.size == 1) "Bookmark deleted" else "${toDelete.size} bookmarks deleted",
+                    actionLabel = "Undo",
+                    withDismissAction = true,
+                    duration = SnackbarDuration.Long
+                )
+                if (result == SnackbarResult.ActionPerformed) viewModel.restoreBookmarks(toDelete)
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.curationError.collect { message ->
+            CurioNotifier.notify(context, message)
+        }
+    }
+
+    LaunchedEffect(loginSuccessMessage) {
+        val msg = loginSuccessMessage ?: return@LaunchedEffect
+        delay(5_000)
+        if (loginSuccessMessage == msg) onDismissLoginSuccess()
+    }
+
+    LaunchedEffect(syncState) {
+        val state = syncState
+        if (state is SyncUiState.Success) {
+            delay(5_000)
+            if (viewModel.syncState.value is SyncUiState.Success) {
+                viewModel.dismissSyncBanner()
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     androidx.compose.material3.pulltorefresh.PullToRefreshBox(
         isRefreshing = isSyncing,
         onRefresh = { viewModel.syncBookmarks(fetchNextPage = false) },
@@ -233,7 +302,7 @@ internal fun BookmarkFeedScreen(
                             .size(44.dp)
                             .clip(CircleShape)
                             .glassSurface(tier = tier, shape = CircleShape)
-                            .clickable { onOpenMenu() },
+                            .pressBounce(pressedScale = 0.9f) { onOpenMenu() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Default.Menu, contentDescription = "Open menu", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
@@ -252,7 +321,7 @@ internal fun BookmarkFeedScreen(
                             Icon(
                                 imageVector = Icons.Filled.Search,
                                 contentDescription = "Search Bookmarks",
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp)
                             )
                             androidx.compose.material3.TextField(
@@ -274,23 +343,31 @@ internal fun BookmarkFeedScreen(
                                 modifier = Modifier.weight(1f).testTag("search_field_input")
                             )
                             if (searchQuery.isNotEmpty()) {
-                                Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = "Clear raw query",
-                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                Box(
                                     modifier = Modifier
-                                        .size(18.dp)
-                                        .clickable { viewModel.updateSearchQuery("") }
-                                )
+                                        .minTouchTarget(40.dp)
+                                        .clip(CircleShape)
+                                        .pressBounce(pressedScale = 0.85f) { viewModel.updateSearchQuery("") },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Clear search",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                             Box(
                                 modifier = Modifier
                                     .bounceScale(searchMode == SearchMode.SEMANTIC)
+                                    // Announce the toggle's on/off state to TalkBack.
+                                    .semantics { stateDescription = if (searchMode == SearchMode.SEMANTIC) "AI search on" else "AI search off" }
                                     .background(
                                         brush = if (searchMode == SearchMode.SEMANTIC) curioAccentBrush(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary) else Brush.linearGradient(listOf(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))),
                                         shape = RoundedCornerShape(20.dp)
                                     )
-                                    .clickable {
+                                    .pressBounce(pressedScale = 0.9f) {
                                         when {
                                             // Turning AI off is always allowed.
                                             searchMode == SearchMode.SEMANTIC ->
@@ -397,21 +474,23 @@ internal fun BookmarkFeedScreen(
                                             viewModel.syncBookmarks(fetchNextPage = true)
                                         }
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text(if (forceLocalNano) "AI engine: On-device" else "AI engine: Cloud") },
-                                        leadingIcon = { Icon(if (forceLocalNano) Icons.Default.Psychology else Icons.Default.AutoAwesome, contentDescription = null) },
-                                        trailingIcon = {
-                                            Text(
-                                                text = "Tap to switch",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                            )
-                                        },
-                                        onClick = {
-                                            showActionsMenu = false
-                                            viewModel.setForceLocalNano(!forceLocalNano)
-                                        }
-                                    )
+                                    if (xaiKeyConfigured) {
+                                        DropdownMenuItem(
+                                            text = { Text(if (forceLocalNano) "AI engine: On-device" else "AI engine: Cloud") },
+                                            leadingIcon = { Icon(if (forceLocalNano) Icons.Default.Psychology else Icons.Default.AutoAwesome, contentDescription = null) },
+                                            trailingIcon = {
+                                                Text(
+                                                    text = "Tap to switch",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                                )
+                                            },
+                                            onClick = {
+                                                showActionsMenu = false
+                                                viewModel.setForceLocalNano(!forceLocalNano)
+                                            }
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text(if (isReorderMode) "Done reordering" else "Reorder bookmarks") },
                                         leadingIcon = { Icon(if (isReorderMode) Icons.Default.Check else Icons.Default.Autorenew, contentDescription = null) },
@@ -433,7 +512,7 @@ internal fun BookmarkFeedScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     QuickFilterPill("All", Icons.Default.Bookmarks, bookmarks.size.takeIf { quickFilter == QuickFilter.ALL }, quickFilter == QuickFilter.ALL, MaterialTheme.colorScheme.primary) { viewModel.setQuickFilter(QuickFilter.ALL) }
-                    QuickFilterPill("Favorites", Icons.Default.Favorite, stats.favoriteCount, quickFilter == QuickFilter.FAVORITES, Color(0xFFFF5A6E)) { viewModel.setQuickFilter(QuickFilter.FAVORITES) }
+                    QuickFilterPill("Favorites", Icons.Default.Favorite, stats.favoriteCount, quickFilter == QuickFilter.FAVORITES, CurioColors.Favorite) { viewModel.setQuickFilter(QuickFilter.FAVORITES) }
                     QuickFilterPill("Read later", Icons.Default.WatchLater, stats.readLaterCount, quickFilter == QuickFilter.READ_LATER, MaterialTheme.colorScheme.secondary) { viewModel.setQuickFilter(QuickFilter.READ_LATER) }
                 }
 
@@ -461,8 +540,8 @@ internal fun BookmarkFeedScreen(
                                     shape = RoundedCornerShape(12.dp)
                                 )
                                 .border(width = 1.dp, color = if (allActive) MaterialTheme.colorScheme.primary else Color.Transparent, shape = RoundedCornerShape(12.dp))
-                                .clickable { viewModel.selectSpace(null) }
-                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                .pressBounce(pressedScale = 0.93f) { viewModel.selectSpace(null) }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
                         ) {
                             Text(
                                 text = "ALL",
@@ -484,8 +563,8 @@ internal fun BookmarkFeedScreen(
                                         shape = RoundedCornerShape(12.dp)
                                     )
                                     .border(width = 1.dp, color = if (active) chipColor else Color.Transparent, shape = RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.selectSpace(if (active) null else space.id) }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    .pressBounce(pressedScale = 0.93f) { viewModel.selectSpace(if (active) null else space.id) }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -536,12 +615,12 @@ internal fun BookmarkFeedScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("SPACE", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, fontSize = 9.sp, letterSpacing = 1.sp), color = spaceColor)
+                                Text("SPACE", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 1.sp), color = spaceColor)
                                 if (space.isSmart) {
                                     Text(
                                         "· SMART",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, fontSize = 9.sp, letterSpacing = 0.5.sp),
-                                        color = spaceColor.copy(alpha = 0.7f)
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 0.5.sp),
+                                        color = spaceColor.copy(alpha = 0.8f)
                                     )
                                 }
                             }
@@ -550,20 +629,32 @@ internal fun BookmarkFeedScreen(
                                 Text(space.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "Exit space",
-                            tint = spaceColor,
-                            modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.selectSpace(null) }.padding(2.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .minTouchTarget(40.dp)
+                                .clip(CircleShape)
+                                .pressBounce(pressedScale = 0.85f) { viewModel.selectSpace(null) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Exit space",
+                                tint = spaceColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
 
                 // Active query / tag filter banner (Spaces have their own chip + banner above)
                 if (selectedTag != null || searchQuery.isNotBlank()) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                            .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -573,17 +664,111 @@ internal fun BookmarkFeedScreen(
                                 if (selectedTag != null) append("Tag '#${selectedTag}' ")
                             }.trimEnd(' ', '•'),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
                         Text(
                             text = "CLEAR ALL",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.error),
-                            modifier = Modifier.clickable { viewModel.clearAllFilters() }
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .pressBounce(pressedScale = 0.9f) { viewModel.clearAllFilters() }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                         )
                     }
                 }
             }
         }
+        // 0b. BYOK SETUP BANNER — shown until the user saves an xAI key in Settings
+        if (!xaiKeyConfigured) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassSurface(
+                            tier = tier,
+                            tint = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f)
+                        )
+                        .pressBounce(pressedScale = 0.98f) { onNavigateToSettings() }
+                        .padding(14.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Add your xAI API key to enable AI features",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                            val uriHandler = LocalUriHandler.current
+                            val bannerStyle = MaterialTheme.typography.labelSmall
+                            val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
+                            val linkColor = MaterialTheme.colorScheme.primary
+                            val bannerText = buildAnnotatedString {
+                                withStyle(SpanStyle(color = baseColor)) {
+                                    append("Auto-tagging, chat, and weekly digests need a key from ")
+                                }
+                                pushStringAnnotation("URL", "https://console.x.ai")
+                                withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                                    append("console.x.ai")
+                                }
+                                pop()
+                                withStyle(SpanStyle(color = baseColor)) { append(". Tap to set up in Settings.") }
+                            }
+                            ClickableText(
+                                text = bannerText,
+                                style = bannerStyle,
+                                onClick = { offset ->
+                                    val hit = bannerText.getStringAnnotations("URL", offset, offset).firstOrNull()
+                                    if (hit != null) uriHandler.openUri(hit.item)
+                                    else onNavigateToSettings()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 0.5 LOGIN SUCCESS BANNER
+        if (!loginSuccessMessage.isNullOrBlank()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassSurface(tier = tier, tint = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Text(
+                            loginSuccessMessage,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = onDismissLoginSuccess, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. SYNC STATUS BANNER
         item {
             when (val state = syncState) {
@@ -597,9 +782,33 @@ internal fun BookmarkFeedScreen(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             Text(
-                                "Synchronizing bookmarks feed from X.com...",
+                                state.message ?: "Synchronizing bookmarks feed from X.com...",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
                             )
+                        }
+                    }
+                }
+                is SyncUiState.Success -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .glassSurface(tier = tier, tint = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f))
+                            .padding(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Text(
+                                state.message,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { viewModel.dismissSyncBanner() }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
                 }
@@ -629,14 +838,95 @@ internal fun BookmarkFeedScreen(
                             .glassSurface(tier = tier, tint = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f))
                             .padding(12.dp)
                     ) {
-                        Text(
-                            text = "Sync Alert: ${state.error}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = state.error,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.syncBookmarks(fetchNextPage = false) },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "Retry sync",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.dismissSyncBanner() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
                 else -> {}
+            }
+        }
+
+        // 2. AI ANALYSIS ERROR BANNER (only when the failed card isn't visible in the list)
+        if (analysisState is AnalysisUiState.Error) {
+            val errorState = analysisState as AnalysisUiState.Error
+            val showGlobalBanner = errorState.bookmarkId == null ||
+                bookmarks.none { it.id == errorState.bookmarkId }
+            if (showGlobalBanner) {
+            item {
+                val errorMsg = errorState.error
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassSurface(tier = tier, tint = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "AI analysis failed: $errorMsg",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { viewModel.clearAnalysisError() },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
             }
         }
 
@@ -681,6 +971,10 @@ internal fun BookmarkFeedScreen(
                             Text("Clear filters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         }
                     }
+                } else if (isSyncing) {
+                    // First sync into an empty cache — show shimmering skeleton cards rather than
+                    // the "your archive is empty" CTA, which would be the wrong action mid-load.
+                    CurioSkeletonList(tier = tier)
                 } else {
                     CurioEmptyState(
                         tier = tier,
@@ -694,6 +988,10 @@ internal fun BookmarkFeedScreen(
                     modifier = Modifier.animateItem()
                 ) {
                     val isProcessing = (analysisState as? AnalysisUiState.Processing)?.bookmarkId == item.id
+                    val cardAnalysisError = analysisState as? AnalysisUiState.Error
+                    val isAnalysisError = cardAnalysisError?.bookmarkId == item.id
+                    val analysisErrorMessage = if (isAnalysisError) cardAnalysisError?.error else null
+                    val chronosFlowInstalled = remember { viewModel.isChronosFlowInstalled() }
                     // Wrapped in remember(item) so the CurioCardActions object is recreated
                     // whenever ANY field of item changes (data class equals/hashCode). Using
                     // only item.id as the key causes stale lambda captures — e.g. onToggleFavorite
@@ -717,37 +1015,93 @@ internal fun BookmarkFeedScreen(
                             onRunDeepAnalysis = { viewModel.runDeepAnalysis(item) },
                             onResolveSource = { viewModel.resolveSource(item) },
                             exportBibtex = { viewModel.exportSingleBibtex(item) },
-                            onDelete = { viewModel.deleteBookmarks(listOf(item.id)) },
+                            onDelete = { deleteWithUndo(listOf(item)) },
+                            onRemindInChronosFlow = { choice -> viewModel.remindToReadLaterInChronosFlow(item, choice) },
+                            onCaptureToChronosFlow = { viewModel.captureToChronosFlowInbox(item) },
+                            onCreateChronosFlowTask = { viewModel.createChronosFlowTask(item) },
                         )
                     }
-                    CurioPostCard(
-                        bookmark = item,
-                        actions = cardActions,
-                        spaces = spaces,
-                        isProcessing = isProcessing,
-                        isImagenGenerated = imagenGeneratedIds.contains(item.id),
-                        imagenUrl = imagenUrls[item.id],
-                        tier = tier,
-                        isSelected = selectedIds.contains(item.id),
-                        onToggleSelect = {
-                            selectedIds = if (selectedIds.contains(item.id)) {
-                                selectedIds - item.id
-                            } else {
-                                selectedIds + item.id
+                    // Swipe-to-triage: left = delete (with Undo), right = toggle read-later.
+                    // Disabled while multi-selecting or reordering so gestures don't collide.
+                    val swipeEnabled = selectedIds.isEmpty() && !isReorderMode
+                    val dismissState = rememberSwipeToDismissBoxState(
+                        confirmValueChange = { value ->
+                            when (value) {
+                                SwipeToDismissBoxValue.EndToStart -> { deleteWithUndo(listOf(item)); true }
+                                SwipeToDismissBoxValue.StartToEnd -> { viewModel.toggleSavedForLater(item); false }
+                                SwipeToDismissBoxValue.Settled -> false
                             }
-                        },
-                        inSelectionMode = selectedIds.isNotEmpty(),
-                        isReorderMode = isReorderMode,
-                        onMoveUp = { viewModel.moveBookmarkUp(item) },
-                        onMoveDown = { viewModel.moveBookmarkDown(item) },
-                        onBookmarkClick = { onBookmarkClick(item) }
+                        }
                     )
+                    SwipeToDismissBox(
+                        state = dismissState,
+                        enableDismissFromStartToEnd = swipeEnabled,
+                        enableDismissFromEndToStart = swipeEnabled,
+                        backgroundContent = {
+                            val toEnd = dismissState.targetValue == SwipeToDismissBoxValue.StartToEnd
+                            val bg = if (toEnd) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(bg.copy(alpha = 0.16f))
+                                    .padding(horizontal = 24.dp),
+                                contentAlignment = if (toEnd) Alignment.CenterStart else Alignment.CenterEnd
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Icon(if (toEnd) Icons.Default.WatchLater else Icons.Default.Delete, contentDescription = null, tint = bg)
+                                    Text(
+                                        if (toEnd) "Read later" else "Delete",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                                        color = bg
+                                    )
+                                }
+                            }
+                        }
+                    ) {
+                        CurioPostCard(
+                            bookmark = item,
+                            actions = cardActions,
+                            spaces = spaces,
+                            isProcessing = isProcessing,
+                            isAnalysisError = isAnalysisError,
+                            analysisErrorMessage = analysisErrorMessage,
+                            isImagenGenerated = imagenGeneratedIds.contains(item.id),
+                            imagenUrl = imagenUrls[item.id],
+                            tier = tier,
+                            isSelected = selectedIds.contains(item.id),
+                            onToggleSelect = {
+                                selectedIds = if (selectedIds.contains(item.id)) {
+                                    selectedIds - item.id
+                                } else {
+                                    selectedIds + item.id
+                                }
+                            },
+                            inSelectionMode = selectedIds.isNotEmpty(),
+                            isReorderMode = isReorderMode,
+                            onMoveUp = { viewModel.moveBookmarkUp(item) },
+                            onMoveDown = { viewModel.moveBookmarkDown(item) },
+                            onBookmarkClick = { onBookmarkClick(item) },
+                            chronosFlowInstalled = chronosFlowInstalled,
+                            // Resolve the embedding suggestion (if any) to a live Space object; only
+                            // shown for unfiled cards, so a stale suggestion for a now-filed card is inert.
+                            suggestedSpace = spaceSuggestions[item.id]?.let { s ->
+                                spaces.firstOrNull { it.id == s.spaceId }
+                            }
+                        )
+                    }
                 }
             }
         }
 
         item { Spacer(modifier = Modifier.height(80.dp)) }
     }
+
+    // Undo host for destructive deletes — floats just above the bottom bar.
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+    )
 
     // Floating bulk operations action bar
     if (selectedIds.isNotEmpty()) {
@@ -871,7 +1225,7 @@ internal fun BookmarkFeedScreen(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(cs.error.copy(alpha = 0.16f))
                                 .pressBounce {
-                                    viewModel.deleteBookmarks(selectedIds.toList())
+                                    deleteWithUndo(bookmarks.filter { it.id in selectedIds })
                                     selectedIds = emptySet()
                                 }
                                 .padding(horizontal = 14.dp, vertical = 8.dp)
@@ -908,6 +1262,7 @@ internal fun BookmarkFeedScreen(
                 }
             }
         }
+    }
     }
 
     if (showExportDialog) {
@@ -947,8 +1302,9 @@ internal fun BookmarkFeedScreen(
                                 .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
                                 .clickable {
                                     val json = exportBackupJson(selectedBookmarks)
-                                    copyToClipboard(context, json)
-                                    shareBookmark(context, json)
+                                    copyToClipboard(context, json, notify = false)
+                                    shareBookmark(context, json, notify = false)
+                                    CurioNotifier.notify(context, "Copied & share sheet opened")
                                     selectedIds = emptySet()
                                     dismiss()
                                 },
@@ -965,8 +1321,9 @@ internal fun BookmarkFeedScreen(
                                 .background(MaterialTheme.colorScheme.secondary, RoundedCornerShape(14.dp))
                                 .clickable {
                                     val csv = exportBackupCsv(selectedBookmarks)
-                                    copyToClipboard(context, csv)
-                                    shareBookmark(context, csv)
+                                    copyToClipboard(context, csv, notify = false)
+                                    shareBookmark(context, csv, notify = false)
+                                    CurioNotifier.notify(context, "Copied & share sheet opened")
                                     selectedIds = emptySet()
                                     dismiss()
                                 },
@@ -983,8 +1340,9 @@ internal fun BookmarkFeedScreen(
                                 .background(Color(0xFFB71C1C), RoundedCornerShape(14.dp))
                                 .clickable {
                                     val bib = viewModel.exportBibtex(selectedBookmarks)
-                                    copyToClipboard(context, bib, "BibTeX citations")
-                                    shareBookmark(context, bib)
+                                    copyToClipboard(context, bib, "BibTeX citations", notify = false)
+                                    shareBookmark(context, bib, notify = false)
+                                    CurioNotifier.notify(context, "Copied & share sheet opened")
                                     selectedIds = emptySet()
                                     dismiss()
                                 },
@@ -1011,8 +1369,9 @@ internal fun BookmarkFeedScreen(
                                     .background(color, RoundedCornerShape(14.dp))
                                     .clickable {
                                         val out = build()
-                                        copyToClipboard(context, out, "$label citations")
-                                        shareBookmark(context, out)
+                                        copyToClipboard(context, out, "$label citations", notify = false)
+                                        shareBookmark(context, out, notify = false)
+                                        CurioNotifier.notify(context, "Copied & share sheet opened")
                                         selectedIds = emptySet()
                                         dismiss()
                                     },
@@ -1088,13 +1447,33 @@ internal fun BookmarkFeedScreen(
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
                         }
-                        // The model repo is Gemma-license-gated. Owners can bake HF_TOKEN in at build
-                        // time; otherwise paste a token here once (it's stored encrypted and reused).
+                        // EmbeddingGemma is Gemma-license-gated on Hugging Face. Paste a token
+                        // once (stored encrypted and reused); get one at huggingface.co/settings/tokens.
+                        val hfUriHandler = LocalUriHandler.current
+                        val hfLinkColor = MaterialTheme.colorScheme.primary
+                        val hfLabelText = buildAnnotatedString {
+                            append("Hugging Face token — get one at ")
+                            pushStringAnnotation("URL", "https://huggingface.co/settings/tokens")
+                            withStyle(SpanStyle(color = hfLinkColor, textDecoration = TextDecoration.Underline)) {
+                                append("huggingface.co/settings/tokens")
+                            }
+                            pop()
+                        }
+                        ClickableText(
+                            text = hfLabelText,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            ),
+                            onClick = { offset ->
+                                hfLabelText.getStringAnnotations("URL", offset, offset)
+                                    .firstOrNull()?.let { hfUriHandler.openUri(it.item) }
+                            }
+                        )
                         androidx.compose.material3.OutlinedTextField(
                             value = hfToken,
                             onValueChange = { hfToken = it },
                             singleLine = true,
-                            label = { Text("Hugging Face token (optional)") },
+                            label = { Text("Paste token here") },
                             visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -1162,7 +1541,7 @@ internal fun BookmarkFeedScreen(
             }
         )
     }
-}
+    }
 }
 
 /** A tinted, equally-weighted action tile in the bulk-selection bar (icon over label). */

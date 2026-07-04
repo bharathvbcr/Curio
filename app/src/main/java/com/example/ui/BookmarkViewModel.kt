@@ -17,10 +17,14 @@ import com.example.data.ocr.OcrAnalyzer
 import com.example.data.repo.RateLimitException
 import com.example.data.source.SourceResolver
 import com.example.domain.model.Bookmark
+import com.example.interop.ChronosReminderChoice
+import com.example.notifications.CurioTask
 import com.example.domain.model.Space
 import com.example.domain.model.SourceType
 import com.example.domain.model.SpaceRules
 import com.example.domain.repo.BookmarkRepository
+import com.example.ui.theme.GlassTier
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -38,9 +42,17 @@ enum class AppThemeSetting { SYSTEM, LIGHT, DARK }
 enum class SearchMode { KEYWORD, SEMANTIC }
 enum class QuickFilter { ALL, FAVORITES, READ_LATER }
 
+/** Insights stat-tile drill-down filter applied on the bookmark feed. */
+enum class LibraryFilter { ALL, HAS_OCR, HAS_SOURCE, DEEP_ANALYZED }
+
 sealed interface SyncUiState {
     object Idle : SyncUiState
-    object Loading : SyncUiState
+    /**
+     * A long-running operation is in flight. [message] is an optional live progress note (e.g.
+     * "Embedding 12/50…"); when null the UI falls back to the X.com feed-sync copy. Making this a
+     * data class lets embed/resolve/dedup surface running counts so the user can see it working.
+     */
+    data class Loading(val message: String? = null) : SyncUiState
     data class Success(val message: String) : SyncUiState
     data class Error(val error: String) : SyncUiState
     data class RateLimited(val secondsLeft: Int) : SyncUiState
@@ -50,7 +62,7 @@ sealed interface AnalysisUiState {
     object Idle : AnalysisUiState
     data class Processing(val bookmarkId: String) : AnalysisUiState
     data class Success(val bookmarkId: String) : AnalysisUiState
-    data class Error(val error: String) : AnalysisUiState
+    data class Error(val error: String, val bookmarkId: String? = null) : AnalysisUiState
 }
 
 /** State of the on-demand weekly AI digest (themed summary of the last 7 days of saves). */
@@ -60,6 +72,39 @@ sealed interface DigestUiState {
     data class Ready(val markdown: String, val itemCount: Int) : DigestUiState
     data class Empty(val reason: String) : DigestUiState
     data class Error(val message: String) : DigestUiState
+}
+
+/** How the active xAI key got into memory — shown verbatim to the user in Settings. */
+enum class XaiKeyOrigin { LOADED_FROM_STORAGE, JUST_SAVED }
+
+/** Verification progress/result for the active xAI key (Settings → xAI API Key status line). */
+sealed interface XaiKeyCheck {
+    object Checking : XaiKeyCheck
+    object Live : XaiKeyCheck
+    data class Invalid(val reason: String) : XaiKeyCheck
+    /** Key is stored, but xAI couldn't be reached to confirm it works (e.g. offline). */
+    object Unreachable : XaiKeyCheck
+}
+
+/**
+ * Full key state for the Settings card: no key at all, or a present key annotated with where it
+ * came from ([XaiKeyOrigin]) and whether it actually works ([XaiKeyCheck]).
+ */
+sealed interface XaiKeyStatus {
+    /** Initial state before the async TokenStore read completes. */
+    object Unknown : XaiKeyStatus
+    object NotSet : XaiKeyStatus
+    data class Present(val origin: XaiKeyOrigin, val check: XaiKeyCheck) : XaiKeyStatus
+}
+
+/** State of the user-supplied X OAuth client ID (BYOK for bookmark sync). */
+enum class XClientIdStatus {
+    /** No custom ID saved — the build-time/built-in client ID is in use. */
+    BUILT_IN,
+    /** A custom ID was found in encrypted storage at startup. */
+    CUSTOM_LOADED,
+    /** A custom ID was saved in this session. */
+    CUSTOM_SAVED
 }
 
 data class CurioStats(
@@ -83,7 +128,10 @@ class BookmarkViewModel(
     private val textGenerator: com.example.data.ai.TextGeneratorSelector,
     private val grokImageService: com.example.data.GrokImageService,
     private val embeddingModelManager: com.example.data.embedding.EmbeddingModelManager,
-    private val tokenStore: com.example.data.remote.TokenStore
+    private val tokenStore: com.example.data.remote.TokenStore,
+    private val chronosFlowBridge: com.example.interop.ChronosFlowBridge,
+    private val curioActivityController: com.example.notifications.CurioActivityController,
+    private val reminderScheduler: com.example.notifications.ReminderScheduler
 ) : ViewModel() {
 
     /** Download state of the on-device EmbeddingGemma model (for the Settings card). */
@@ -95,17 +143,29 @@ class BookmarkViewModel(
      */
     fun downloadEmbeddingModel(token: String? = null) {
         viewModelScope.launch {
-            val ok = embeddingModelManager.download(token)
-            _syncState.value = if (ok) SyncUiState.Success("On-device model ready")
-            else SyncUiState.Error("Model download failed")
+            embeddingModelManager.download(token)
+            // Mirror the *actual* terminal state into the global banner rather than the raw boolean:
+            // a `false` can also mean "ignored a re-entrant tap while a download is already running",
+            // which must not surface as a failure. Reading the state also gives the real error text.
+            when (val s = embeddingModelManager.state.value) {
+                is com.example.data.embedding.EmbeddingModelManager.State.Ready ->
+                    _syncState.value = SyncUiState.Success("On-device model ready")
+                is com.example.data.embedding.EmbeddingModelManager.State.Failed ->
+                    _syncState.value = SyncUiState.Error(s.message)
+                else -> { /* still downloading (elsewhere) or no-op — leave the banner untouched */ }
+            }
         }
     }
 
     /** Removes the downloaded model — embeddings fall back to the cloud path. */
-    fun deleteEmbeddingModel() = embeddingModelManager.delete()
+    fun deleteEmbeddingModel() {
+        embeddingModelManager.onDeleted?.invoke()
+        embeddingModelManager.delete()
+    }
 
     /** Drops all stored vectors so they get rebuilt (use when switching embedding models/dimensions). */
     fun clearEmbeddingsForReindex() {
+        _spaceSuggestions.value = emptyMap()
         viewModelScope.launch { repository.clearAllEmbeddings() }
     }
 
@@ -133,12 +193,47 @@ class BookmarkViewModel(
     val selectedSpaceId: StateFlow<String?> = searchController.selectedSpaceId
 
     fun setQuickFilter(filter: QuickFilter) = searchController.setQuickFilter(filter)
+    fun setLibraryFilter(filter: LibraryFilter) = searchController.setLibraryFilter(filter)
     fun selectSpace(spaceId: String?) = searchController.selectSpace(spaceId)
 
-    private val _themeSetting = MutableStateFlow(AppThemeSetting.SYSTEM)
-    val themeSetting: StateFlow<AppThemeSetting> = _themeSetting.asStateFlow()
+    // Embedding-derived Space suggestions, keyed by bookmark id — the medium-confidence matches the
+    // auto-organiser wasn't sure enough to file. The card surfaces these as a tap-to-file pill.
+    private val _spaceSuggestions = MutableStateFlow<Map<String, com.example.domain.model.SpaceSuggestion>>(emptyMap())
+    val spaceSuggestions: StateFlow<Map<String, com.example.domain.model.SpaceSuggestion>> = _spaceSuggestions.asStateFlow()
 
-    fun setThemeSetting(setting: AppThemeSetting) { _themeSetting.value = setting }
+    /** OS dark-style preference; persisted across app restarts. */
+    val themeSetting: StateFlow<AppThemeSetting> =
+        tokenStore.themeSettingFlow
+            .map { raw ->
+                raw?.let { runCatching { AppThemeSetting.valueOf(it) }.getOrNull() }
+                    ?: AppThemeSetting.DARK
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, AppThemeSetting.DARK)
+
+    fun setThemeSetting(setting: AppThemeSetting) {
+        viewModelScope.launch { tokenStore.setThemeSetting(setting.name) }
+    }
+
+    /** Material You dynamic-color toggle; persisted across app restarts. */
+    val useDynamicColor: StateFlow<Boolean> =
+        tokenStore.useDynamicColorFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setUseDynamicColor(enabled: Boolean) {
+        viewModelScope.launch { tokenStore.setUseDynamicColor(enabled) }
+    }
+
+    /** Manual glass-tier override (null = Auto); persisted across app restarts. */
+    val glassTierOverride: StateFlow<GlassTier?> =
+        tokenStore.glassTierOverrideFlow
+            .map { raw ->
+                raw?.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { GlassTier.valueOf(it) }.getOrNull() }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun setGlassTierOverride(tier: GlassTier?) {
+        viewModelScope.launch { tokenStore.setGlassTierOverride(tier?.name) }
+    }
 
     val rawBookmarks: StateFlow<List<Bookmark>> = _userId
         .flatMapLatest { uid ->
@@ -154,13 +249,15 @@ class BookmarkViewModel(
         val mode: SearchMode,
         val semanticResults: List<Bookmark>,
         val quickFilter: QuickFilter,
-        val spaceId: String?
+        val spaceId: String?,
+        val libraryFilter: LibraryFilter
     )
     private val _searchContext = combine(
         searchController.searchMode, searchController.semanticResults,
-        searchController.quickFilter, searchController.selectedSpaceId
-    ) { mode, results, quick, space ->
-        SearchContext(mode, results, quick, space)
+        searchController.quickFilter, searchController.selectedSpaceId,
+        searchController.libraryFilter
+    ) { mode, results, quick, space, library ->
+        SearchContext(mode, results, quick, space, library)
     }
 
     val bookmarks: StateFlow<List<Bookmark>> = combine(
@@ -189,7 +286,13 @@ class BookmarkViewModel(
                 QuickFilter.READ_LATER -> item.isSavedForLater
             }
             val matchSpace = ctx.spaceId == null || item.spaceId == ctx.spaceId
-            matchQuery && matchCategory && matchTag && matchQuick && matchSpace
+            val matchLibrary = when (ctx.libraryFilter) {
+                LibraryFilter.ALL -> true
+                LibraryFilter.HAS_OCR -> !item.ocrText.isNullOrBlank()
+                LibraryFilter.HAS_SOURCE -> item.sourceType != null
+                LibraryFilter.DEEP_ANALYZED -> item.isDeepAnalyzed
+            }
+            matchQuery && matchCategory && matchTag && matchQuick && matchSpace && matchLibrary
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -204,6 +307,13 @@ class BookmarkViewModel(
             } else flowOf(emptyList())
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    init {
+        viewModelScope.launch {
+            combine(rawBookmarks, spaces) { books, sp -> books to sp.map { it.id }.toSet() }
+                .collect { (books, spaceIds) -> pruneStaleSuggestions(books, spaceIds) }
+        }
+    }
 
     val stats: StateFlow<CurioStats> = rawBookmarks
         .map { list ->
@@ -243,9 +353,13 @@ class BookmarkViewModel(
         val uid = _userId.value ?: return
         val trimmed = name.trim().ifBlank { return }
         viewModelScope.launch {
-            repository.createSpace(uid, trimmed, color, icon, description, rules, isPinned)
-            // A brand-new Smart Space immediately sweeps in matching items that are still unfiled.
-            if (rules.isActive) repository.applyRulesToLibrary(uid)
+            val space = repository.createSpace(uid, trimmed, color, icon, description, rules, isPinned)
+            if (rules.isActive) {
+                val count = repository.applySpaceRules(space.id)
+                if (rules.autoFile) repository.applyRulesToLibrary(uid)
+                reportSpaceRulesResult(count, trimmed)
+                scheduleOrganizeAfterEmbed()
+            }
         }
     }
 
@@ -257,14 +371,21 @@ class BookmarkViewModel(
         viewModelScope.launch {
             repository.updateSpace(id, trimmed, color, icon, description, rules, isPinned)
             val uid = _userId.value
-            if (uid != null && rules.isActive) repository.applyRulesToLibrary(uid)
+            if (uid != null && rules.isActive) {
+                val count = repository.applySpaceRules(id)
+                if (rules.autoFile) repository.applyRulesToLibrary(uid)
+                reportSpaceRulesResult(count, trimmed)
+                scheduleOrganizeAfterEmbed()
+            }
         }
     }
 
     fun deleteSpace(id: String) {
         viewModelScope.launch {
             searchController.clearSpaceIf(id)
+            _spaceSuggestions.value = _spaceSuggestions.value.filterValues { it.spaceId != id }
             repository.deleteSpace(id)
+            scheduleOrganizeAfterEmbed()
         }
     }
 
@@ -280,19 +401,32 @@ class BookmarkViewModel(
     fun applySpaceRules(space: Space) {
         viewModelScope.launch {
             val count = repository.applySpaceRules(space.id)
-            _syncState.value = SyncUiState.Success(
-                if (count == 0) "No new matches for \"${space.name}\""
-                else "Filed $count bookmark${if (count == 1) "" else "s"} into \"${space.name}\""
-            )
+            reportSpaceRulesResult(count, space.name)
+            if (count > 0) scheduleOrganizeAfterEmbed()
         }
+    }
+
+    private fun reportSpaceRulesResult(count: Int, spaceName: String) {
+        _syncState.value = SyncUiState.Success(
+            if (count == 0) "No new matches for \"$spaceName\""
+            else "Filed $count bookmark${if (count == 1) "" else "s"} into \"$spaceName\""
+        )
     }
 
     /** Files (or unfiles, when [spaceId] is null) the given bookmarks into a Space. */
     // Per-bookmark mutations (curation toggles, notes, delete, category/space assignment) live in
     // CurationController to shrink this god class; the VM facades them so the UI is unchanged.
     private val curationController = CurationController(viewModelScope, repository)
+    val curationError: kotlinx.coroutines.flow.SharedFlow<String> = curationController.curationError
 
-    fun assignBookmarksToSpace(ids: List<String>, spaceId: String?) = curationController.assignToSpace(ids, spaceId)
+    fun assignBookmarksToSpace(ids: List<String>, spaceId: String?) {
+        if (ids.isNotEmpty()) {
+            _spaceSuggestions.value = _spaceSuggestions.value - ids.toSet()
+        }
+        curationController.assignToSpace(ids, spaceId)
+        // Filing or un-filing changes centroids and the unfiled set → refresh suggestions.
+        if (ids.isNotEmpty()) scheduleOrganizeAfterEmbed()
+    }
 
     /**
      * Accepts the AI-category suggestion for an unfiled bookmark: ensures the Space matching its
@@ -302,9 +436,11 @@ class BookmarkViewModel(
     fun acceptCategorySuggestion(bookmark: Bookmark) {
         val uid = _userId.value ?: return
         val category = bookmark.category?.takeIf { it.isNotBlank() } ?: return
+        _spaceSuggestions.value = _spaceSuggestions.value - bookmark.id
         viewModelScope.launch {
             repository.ensureCategorySpace(uid, category)?.let { spaceId ->
                 repository.assignToSpace(listOf(bookmark.id), spaceId)
+                scheduleOrganizeAfterEmbed()
             }
         }
     }
@@ -319,8 +455,44 @@ class BookmarkViewModel(
         viewModelScope.launch {
             val space = repository.createSpace(uid, trimmed, color, icon, description, rules, isPinned)
             if (ids.isNotEmpty()) repository.assignToSpace(ids, space.id)
-            if (rules.isActive) repository.applyRulesToLibrary(uid)
+            if (rules.isActive) {
+                val count = repository.applySpaceRules(space.id)
+                if (rules.autoFile) repository.applyRulesToLibrary(uid)
+                reportSpaceRulesResult(count, trimmed)
+            }
+            if (ids.isNotEmpty() || rules.isActive) scheduleOrganizeAfterEmbed()
         }
+    }
+
+    /**
+     * Runs the embedding-driven auto-organiser: files high-confidence cards into their nearest Space,
+     * spins up new Spaces from clusters, and stashes the medium-confidence remainder as per-card
+     * suggestions. Silent unless [announce] is set (the manual "Embed All" flow reports the outcome).
+     * Safe to call repeatedly — it only ever touches *unfiled* bookmarks.
+     */
+    fun organizeByEmbedding(announce: Boolean = false) {
+        val uid = _userId.value ?: return
+        viewModelScope.launch {
+            val result = runCatching { repository.organizeByEmbedding(uid) }
+                .getOrElse { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.e(TAG, "organizeByEmbedding failed", e)
+                    return@launch
+                }
+            _spaceSuggestions.value = result.suggestions.associateBy { it.bookmarkId }
+            if (announce) {
+                result.announceMessage()?.let { msg ->
+                    _syncState.value = SyncUiState.Success(msg)
+                }
+            }
+        }
+    }
+
+    /** Files a suggested bookmark into its suggested Space and drops the now-consumed suggestion. */
+    fun acceptSpaceSuggestion(bookmarkId: String) {
+        val suggestion = _spaceSuggestions.value[bookmarkId] ?: return
+        assignBookmarksToSpace(listOf(bookmarkId), suggestion.spaceId)
+        _spaceSuggestions.value = _spaceSuggestions.value - bookmarkId
     }
 
     // ── Phase 12: Personal curation toggles ─────────────────────────────────
@@ -330,11 +502,133 @@ class BookmarkViewModel(
     /** Saves (or clears, when blank) the user's personal note on an entry. */
     fun updateNotes(bookmarkId: String, notes: String?) = curationController.updateNotes(bookmarkId, notes)
 
+    // ── ChronosFlow handoff (productivity integration) ───────────────────────
+    // Hands a bookmark to the companion ChronosFlow planner app via its interop provider. Each call
+    // reports its outcome through [syncState] (the same channel sync messages use). Off the main
+    // thread because ContentResolver.insert crosses an IPC boundary into ChronosFlow's process.
+
+    /**
+     * True when ChronosFlow is installed; gates the ChronosFlow actions in the card options sheet.
+     * Resolved once and cached: the underlying check is a PackageManager IPC, and the feed asks per
+     * card, so we avoid a main-thread binder call on every card. (Install state changing mid-session
+     * is rare; it refreshes on next process start.)
+     */
+    private val chronosFlowInstalled: Boolean by lazy { chronosFlowBridge.isAvailable() }
+
+    fun isChronosFlowInstalled(): Boolean = chronosFlowInstalled
+
+    /**
+     * "Remind me to read later" for [bookmark]. Curio now owns the reminder in-house: it schedules
+     * its own local notification (via [reminderScheduler]) for the time implied by [choice], so the
+     * reminder fires whether or not the companion ChronosFlow app is installed. When ChronosFlow IS
+     * installed we also mirror the item into its reading list (best-effort) so it appears in the
+     * user's planner — but that no longer gates the reminder or the confirmation.
+     */
+    fun remindToReadLaterInChronosFlow(bookmark: Bookmark, choice: ChronosReminderChoice) {
+        val url = bookmark.url?.takeIf { it.isNotBlank() } ?: bookmark.text.takeIf { it.isNotBlank() }
+        if (url == null) {
+            setTransientSyncState(SyncUiState.Error("This bookmark has no link to read later."))
+            return
+        }
+        val title = (bookmark.sourceTitle ?: bookmark.title)?.takeIf { it.isNotBlank() }
+        val remindAt = choice.toEpochMillis()
+
+        // Primary: Curio's own scheduled reminder notification.
+        if (remindAt != null) {
+            reminderScheduler.schedule(bookmark.id, title, url, remindAt)
+        }
+
+        // Optional mirror to ChronosFlow (only if installed). Best-effort; failures are ignored.
+        if (chronosFlowInstalled) {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    chronosFlowBridge.sendToReadingList(
+                        url = url, title = title,
+                        reminderAtEpochMillis = remindAt, notes = bookmark.notes
+                    )
+                }
+            }
+        }
+
+        setTransientSyncState(
+            SyncUiState.Success(
+                if (choice == ChronosReminderChoice.NONE) "Saved to read later"
+                else "Curio will remind you ${choice.label.lowercase()}"
+            )
+        )
+    }
+
+    /** Drops [bookmark] into ChronosFlow's quick-capture inbox. */
+    fun captureToChronosFlowInbox(bookmark: Bookmark) {
+        val text = listOfNotNull(
+            (bookmark.sourceTitle ?: bookmark.title)?.takeIf { it.isNotBlank() },
+            bookmark.url?.takeIf { it.isNotBlank() } ?: bookmark.text
+        ).distinct().joinToString("\n").ifBlank { bookmark.text }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { chronosFlowBridge.captureToInbox(text) }
+            setTransientSyncState(result.fold(
+                onSuccess = { SyncUiState.Success("Captured to ChronosFlow inbox") },
+                onFailure = { SyncUiState.Error(chronosFlowError(it)) }
+            ))
+        }
+    }
+
+    /** Creates a follow-up task in ChronosFlow from [bookmark]. */
+    fun createChronosFlowTask(bookmark: Bookmark) {
+        val title = (bookmark.sourceTitle ?: bookmark.title)?.takeIf { it.isNotBlank() }
+            ?: bookmark.text.take(80)
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                chronosFlowBridge.createTask(
+                    title = title,
+                    notes = bookmark.summary ?: bookmark.notes,
+                    url = bookmark.url?.takeIf { it.isNotBlank() }
+                )
+            }
+            setTransientSyncState(result.fold(
+                onSuccess = { SyncUiState.Success("Created a task in ChronosFlow") },
+                onFailure = { SyncUiState.Error(chronosFlowError(it)) }
+            ))
+        }
+    }
+
+    private fun chronosFlowError(t: Throwable): String = when (t) {
+        is SecurityException -> "ChronosFlow declined the item — check its handoff settings."
+        else -> t.message ?: "Couldn't reach ChronosFlow."
+    }
+
+    /** Sets a transient ChronosFlow result on [_syncState] and clears it after [delayMs] so it
+     *  doesn't masquerade as a persistent sync error in the feed banner. */
+    private fun setTransientSyncState(state: SyncUiState, delayMs: Long = 4_000L) {
+        _syncState.value = state
+        viewModelScope.launch {
+            delay(delayMs)
+            if (_syncState.value === state) _syncState.value = SyncUiState.Idle
+        }
+    }
+
     // ── Weekly AI digest (delegated to DigestController) ─────────────────────
     private val digestController = DigestController(viewModelScope, aiAnalyzer, { rawBookmarks.value })
     val digestState: StateFlow<DigestUiState> = digestController.digestState
     fun generateWeeklyDigest() = digestController.generate()
     fun dismissDigest() = digestController.dismiss()
+
+    init {
+        // Mirror the digest lifecycle into the unified live activity: "Preparing your digest…" while
+        // it generates, then a dismissible "Your weekly digest is ready" when it lands.
+        viewModelScope.launch {
+            digestController.digestState.collect { s ->
+                when (s) {
+                    is DigestUiState.Loading -> curioActivityController.taskStarted(CurioTask.DIGEST)
+                    is DigestUiState.Ready -> {
+                        curioActivityController.taskFinished(CurioTask.DIGEST)
+                        curioActivityController.digestReady(s.itemCount)
+                    }
+                    else -> curioActivityController.taskFinished(CurioTask.DIGEST)
+                }
+            }
+        }
+    }
 
     // ── Resurfacing / spaced review ─────────────────────────────────────────
     private val _rediscoverOffset = MutableStateFlow(0)
@@ -365,6 +659,16 @@ class BookmarkViewModel(
     private val _analysisState = MutableStateFlow<AnalysisUiState>(AnalysisUiState.Idle)
     val analysisState: StateFlow<AnalysisUiState> = _analysisState.asStateFlow()
 
+    fun dismissSyncBanner() {
+        _syncState.value = SyncUiState.Idle
+    }
+
+    fun clearAnalysisError() {
+        if (_analysisState.value is AnalysisUiState.Error) {
+            _analysisState.value = AnalysisUiState.Idle
+        }
+    }
+
     // Initialise to false; the true value is loaded asynchronously in init{} so we never call
     // XaiKeyStore.isConfigured() synchronously at construction time — TokenStore may not have
     // finished loading its EncryptedSharedPreferences yet, which would return a stale false.
@@ -375,11 +679,29 @@ class BookmarkViewModel(
     /** Whether a usable xAI key is configured (drives the Settings key card). */
     val xaiKeyConfigured: StateFlow<Boolean> = _xaiKeyConfigured.asStateFlow()
 
+    private val _xaiKeyStatus = MutableStateFlow<XaiKeyStatus>(XaiKeyStatus.Unknown)
+    /**
+     * Rich key state for the Settings card: tells the user whether a key is loaded (from encrypted
+     * storage) or was just saved, and whether it is live (verified against xAI) — not merely present.
+     */
+    val xaiKeyStatus: StateFlow<XaiKeyStatus> = _xaiKeyStatus.asStateFlow()
+
     init {
         viewModelScope.launch {
+            // Read the key from TokenStore directly rather than trusting XaiKeyStore: the
+            // Application-level startup load runs on a separate IO coroutine and may not have
+            // completed yet. Re-setting the runtime key here is idempotent and closes that race,
+            // so the "key loaded" feedback below is never a stale false.
+            val storedKey = runCatching { tokenStore.getXaiKey() }.getOrNull()
+            if (!storedKey.isNullOrBlank()) com.example.data.XaiKeyStore.setRuntimeKey(storedKey)
             val configured = com.example.data.XaiKeyStore.isConfigured()
             _xaiKeyConfigured.value = configured
             _forceLocalNano.value = !configured
+            if (configured) {
+                verifyXaiKey(origin = XaiKeyOrigin.LOADED_FROM_STORAGE)
+            } else {
+                _xaiKeyStatus.value = XaiKeyStatus.NotSet
+            }
         }
     }
 
@@ -403,7 +725,88 @@ class BookmarkViewModel(
             com.example.data.XaiKeyStore.setRuntimeKey(key.trim())
             // Refresh both _xaiKeyConfigured and _forceLocalNano together.
             refreshKeyAvailability()
+            if (com.example.data.XaiKeyStore.isConfigured()) {
+                verifyXaiKey(origin = XaiKeyOrigin.JUST_SAVED)
+            } else {
+                _xaiKeyStatus.value = XaiKeyStatus.NotSet
+            }
         }
+    }
+
+    /**
+     * Probes the active key against xAI's key-introspection endpoint (no tokens consumed) and
+     * publishes the result to [xaiKeyStatus]. [origin] is preserved through the check so the UI
+     * can keep saying "loaded from storage" vs "just saved". Null origin = re-check in place
+     * (retry button), keeping whatever origin is currently shown.
+     */
+    fun verifyXaiKey(origin: XaiKeyOrigin? = null) {
+        val effectiveOrigin = origin
+            ?: (xaiKeyStatus.value as? XaiKeyStatus.Present)?.origin
+            ?: XaiKeyOrigin.LOADED_FROM_STORAGE
+        viewModelScope.launch {
+            if (!com.example.data.XaiKeyStore.isConfigured()) {
+                _xaiKeyStatus.value = XaiKeyStatus.NotSet
+                return@launch
+            }
+            _xaiKeyStatus.value = XaiKeyStatus.Present(effectiveOrigin, XaiKeyCheck.Checking)
+            val check = when (val result = aiAnalyzer.verifyKey()) {
+                is com.example.data.KeyVerification.Valid -> XaiKeyCheck.Live
+                is com.example.data.KeyVerification.Invalid -> XaiKeyCheck.Invalid(result.reason)
+                is com.example.data.KeyVerification.Unreachable -> XaiKeyCheck.Unreachable
+            }
+            _xaiKeyStatus.value = XaiKeyStatus.Present(effectiveOrigin, check)
+        }
+    }
+
+    /** X display name of the signed-in account (Settings account card). */
+    val accountName: StateFlow<String?> =
+        tokenStore.nameFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** X handle (without @) of the signed-in account. */
+    val accountUsername: StateFlow<String?> =
+        tokenStore.usernameFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** X profile photo URL ("_normal" 48×48 variant); the UI upgrades it for display. */
+    val accountAvatarUrl: StateFlow<String?> =
+        tokenStore.profileImageUrlFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private val _xClientIdStatus = MutableStateFlow(XClientIdStatus.BUILT_IN)
+    /**
+     * Whether X bookmark sync is using the built-in OAuth client ID or one the user supplied
+     * (BYOK), and — when custom — whether it was just saved or loaded from storage.
+     */
+    val xClientIdStatus: StateFlow<XClientIdStatus> = _xClientIdStatus.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val custom = runCatching { tokenStore.getXClientId() }.getOrNull()
+            if (!custom.isNullOrBlank()) _xClientIdStatus.value = XClientIdStatus.CUSTOM_LOADED
+        }
+    }
+
+    /**
+     * Persists a user-supplied X OAuth client ID (BYOK for bookmark sync); blank clears it and
+     * reverts to the built-in ID. Existing tokens were minted for the OLD client, so the user must
+     * sign out and back in afterwards — the Settings card says so.
+     */
+    fun saveXClientId(clientId: String) {
+        viewModelScope.launch {
+            tokenStore.saveXClientId(clientId.trim())
+            _xClientIdStatus.value =
+                if (clientId.isBlank()) XClientIdStatus.BUILT_IN else XClientIdStatus.CUSTOM_SAVED
+        }
+    }
+
+    /**
+     * Whether on-device AI agents / assistants may invoke Curio's *write* AppFunctions (add
+     * bookmark, add note, toggle favourite). Surfaced as a Settings toggle; the function-side gate
+     * reads [com.example.data.remote.TokenStore.isAgentWritesAllowed]. Defaults to true.
+     */
+    val allowAgentWrites: StateFlow<Boolean> =
+        tokenStore.allowAgentWritesFlow.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setAllowAgentWrites(allowed: Boolean) {
+        viewModelScope.launch { tokenStore.setAgentWritesAllowed(allowed) }
     }
 
     private var rateLimitTimer: CountDownTimer? = null
@@ -413,6 +816,23 @@ class BookmarkViewModel(
      * flushed by [setUserId] once a user id is available (e.g. a share that cold-starts the app).
      */
     private var pendingSharedCapture: String? = null
+    /** Debounced organise pass after incremental embedding so a single analysed card can auto-file. */
+    private var organizeAfterEmbedJob: kotlinx.coroutines.Job? = null
+    /** Debounced foreground refresh — picks up suggestions after background embedding/indexing. */
+    private var foregroundOrganizeJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Refreshes embedding suggestions after returning to the app. Background indexing auto-files
+     * and discovers clusters in the DB but only the ViewModel holds medium-confidence suggestions.
+     */
+    fun refreshSuggestionsOnForeground() {
+        if (_userId.value == null) return
+        foregroundOrganizeJob?.cancel()
+        foregroundOrganizeJob = viewModelScope.launch {
+            delay(300)
+            organizeByEmbedding(announce = false)
+        }
+    }
 
     fun setUserId(userId: String) {
         _userId.value = userId
@@ -434,6 +854,10 @@ class BookmarkViewModel(
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     Log.e(TAG, "backfillCategorySpaces failed", e)
                 }
+            // Finally, embedding-driven organisation for anything the rules/categories didn't file:
+            // auto-files semantic matches, discovers new clusters, and stages suggestions. Silent on
+            // login (no toast) — it only refines what the deterministic passes above left unfiled.
+            organizeByEmbedding(announce = false)
         }
         syncBookmarks(fetchNextPage = false)
     }
@@ -463,16 +887,23 @@ class BookmarkViewModel(
         val uid = _userId.value ?: return
         if (_syncState.value is SyncUiState.Loading || _syncState.value is SyncUiState.RateLimited) return
         viewModelScope.launch {
-            _syncState.value = SyncUiState.Loading
+            _syncState.value = SyncUiState.Loading()
+            curioActivityController.taskStarted(CurioTask.SYNC)
             repository.syncBookmarks(uid, fetchNextPage)
                 .onSuccess {
                     _syncState.value = SyncUiState.Success("Synchronized successfully")
                     resolveNewSources()
+                    scheduleOrganizeAfterEmbed()
                 }
                 .onFailure { exception ->
-                    if (exception is RateLimitException) startRateLimitCountDown(exception.resetTimeSeconds)
-                    else _syncState.value = SyncUiState.Error(exception.localizedMessage ?: "Sync failed")
+                    if (exception is RateLimitException) startRateLimitCountDown(exception.resetTimeSeconds.toInt())
+                    else {
+                        val message = humanReadableError(exception, ErrorContext.SYNC)
+                        _syncState.value = SyncUiState.Error(message)
+                        curioActivityController.syncError(message)
+                    }
                 }
+            curioActivityController.taskFinished(CurioTask.SYNC)
         }
     }
 
@@ -496,10 +927,12 @@ class BookmarkViewModel(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "OCR processing failed for bookmark $bookmarkId", e)
-                _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "OCR processing failed")
+                _analysisState.value = AnalysisUiState.Error(humanReadableError(e, ErrorContext.AI), bookmarkId)
             } finally {
-                // Unconditionally clear any residual Processing state regardless of code path taken.
-                _analysisState.value = AnalysisUiState.Idle
+                // Only clear Processing on cancellation; leave Error intact so the UI can show it.
+                if (_analysisState.value is AnalysisUiState.Processing) {
+                    _analysisState.value = AnalysisUiState.Idle
+                }
             }
         }
     }
@@ -532,7 +965,7 @@ class BookmarkViewModel(
                 // its default Space. The freshly-analysed bookmark carries the new category/tags so
                 // rules can match on them.
                 val uid = _userId.value
-                if (uid != null && bookmark.spaceId == null) {
+                if (uid != null && bookmark.spaceId.isNullOrBlank()) {
                     val analysed = bookmark.copy(
                         summary = result.summary, category = result.category,
                         tags = suggestedTags, entities = result.entities, isAnalyzed = true
@@ -553,7 +986,7 @@ class BookmarkViewModel(
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "AI analysis error")
+                _analysisState.value = AnalysisUiState.Error(humanReadableError(e, ErrorContext.AI), bookmark.id)
             }
         }
     }
@@ -571,7 +1004,7 @@ class BookmarkViewModel(
                 _analysisState.value = AnalysisUiState.Success(bookmark.id)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "Deep analysis error")
+                _analysisState.value = AnalysisUiState.Error(humanReadableError(e, ErrorContext.AI), bookmark.id)
             }
         }
     }
@@ -609,7 +1042,7 @@ class BookmarkViewModel(
                 _analysisState.value = AnalysisUiState.Success(bookmark.id)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                _analysisState.value = AnalysisUiState.Error(e.localizedMessage ?: "Source resolution failed")
+                _analysisState.value = AnalysisUiState.Error(humanReadableError(e, ErrorContext.SOURCE), bookmark.id)
             }
         }
     }
@@ -617,7 +1050,17 @@ class BookmarkViewModel(
     fun resolveNewSources() {
         viewModelScope.launch {
             val unresolved = rawBookmarks.value.filter { it.sourceType == null && it.url != null }
-            unresolved.take(10).forEach { bookmark ->
+            val batch = unresolved.take(10)
+            if (batch.isEmpty()) {
+                _syncState.value = SyncUiState.Success("No unresolved sources — nothing to fetch")
+                return@launch
+            }
+            var resolved = 0
+            var failed = 0
+            batch.forEachIndexed { index, bookmark ->
+                // Live progress so the user can see the batch working (arXiv/GitHub/HF lookups are
+                // network-bound and can take a few seconds each).
+                _syncState.value = SyncUiState.Loading("Resolving sources… ${index + 1}/${batch.size}")
                 try {
                     val info = withContext(Dispatchers.IO) {
                         sourceResolver.resolve(bookmark.text, bookmark.url)
@@ -628,15 +1071,22 @@ class BookmarkViewModel(
                             sourceTitle = info.sourceTitle, sourceAuthors = info.sourceAuthors,
                             sourceAbstract = info.sourceAbstract, sourceExtra = info.sourceExtra
                         )
+                        resolved++
+                    } else {
+                        failed++
                     }
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     // Per-bookmark resolution failures are non-fatal — one bad URL shouldn't
                     // abort the batch — but log so a systemic failure (bad key, no network)
                     // is diagnosable instead of vanishing.
+                    failed++
                     Log.w(TAG, "Source resolution failed for ${bookmark.id}", e)
                 }
             }
+            _syncState.value = SyncUiState.Success(
+                "Resolved $resolved of ${batch.size} sources" + if (failed > 0) " ($failed unresolved)" else ""
+            )
         }
     }
 
@@ -644,8 +1094,12 @@ class BookmarkViewModel(
         val uid = _userId.value ?: return
         viewModelScope.launch {
             try {
-                repository.deduplicateBySource(uid)
-                _syncState.value = SyncUiState.Success("Deduplication complete")
+                _syncState.value = SyncUiState.Loading("Deduplicating sources…")
+                val removed = repository.deduplicateBySource(uid)
+                _syncState.value = SyncUiState.Success(
+                    if (removed > 0) "Merged $removed duplicate${if (removed == 1) "" else "s"}"
+                    else "No duplicates found"
+                )
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 _syncState.value = SyncUiState.Error("Dedup failed: ${e.localizedMessage}")
@@ -661,6 +1115,7 @@ class BookmarkViewModel(
                 val bookmark = rawBookmarks.value.find { it.id == bookmarkId } ?: return@launch
                 val embedding = embeddingService.embedDocument(bookmark) ?: return@launch
                 repository.updateEmbedding(bookmarkId, embedding.toByteArray())
+                scheduleOrganizeAfterEmbed()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.w(TAG, "Embedding generation failed for $bookmarkId", e)
@@ -668,16 +1123,54 @@ class BookmarkViewModel(
         }
     }
 
+    /** Drops suggestions for deleted/filed bookmarks or Spaces that no longer exist. */
+    private fun pruneStaleSuggestions(bookmarks: List<Bookmark>, validSpaceIds: Set<String>) {
+        val byId = bookmarks.associateBy { it.id }
+        val pruned = _spaceSuggestions.value.filterKeys { id ->
+            val b = byId[id]
+            b != null && b.spaceId.isNullOrBlank()
+        }.filterValues { it.spaceId in validSpaceIds }
+        if (pruned != _spaceSuggestions.value) _spaceSuggestions.value = pruned
+    }
+
+    /** Coalesce rapid per-card embeds into one organise pass (500 ms debounce). */
+    private fun scheduleOrganizeAfterEmbed() {
+        organizeAfterEmbedJob?.cancel()
+        organizeAfterEmbedJob = viewModelScope.launch {
+            delay(500)
+            organizeByEmbedding(announce = false)
+        }
+    }
+
     fun embedAllBookmarks() {
         viewModelScope.launch {
-            val unembedded = rawBookmarks.value.filter { it.isAnalyzed }
+            val uid = _userId.value ?: run {
+                _syncState.value = SyncUiState.Error("Sign in to embed bookmarks")
+                return@launch
+            }
+            // Embed *every* bookmark that still lacks a vector, analyzed or not — the button is
+            // "Embed All Bookmarks". The old path filtered to isAnalyzed and capped at 50, so a
+            // library with few analyzed items (or more than 50) was only partially embedded and
+            // never made progress on the rest. This pulls the full unembedded work list from the DB
+            // (which already excludes items that have a vector), so re-runs only do outstanding work.
+            val batch = repository.getAllUnembedded(uid)
+            if (batch.isEmpty()) {
+                _syncState.value = SyncUiState.Success("Nothing to embed — all bookmarks already have vectors")
+                return@launch
+            }
+            val engine = if (embeddingService.isOnDevice()) "on-device" else "xAI"
             var succeeded = 0
             var failed = 0
-            unembedded.take(50).forEach { bookmark ->
+            batch.forEachIndexed { index, bookmark ->
+                // Live progress: each embed is a model inference (on-device) or an xAI API round-trip,
+                // so a 50-item batch is slow enough that the user needs to see it advancing.
+                _syncState.value = SyncUiState.Loading(
+                    "Embedding ($engine)… ${index + 1}/${batch.size}"
+                )
                 try {
                     val embedding = withContext(Dispatchers.IO) {
                         embeddingService.embedDocument(bookmark)
-                    } ?: run { failed++; return@forEach }
+                    } ?: run { failed++; return@forEachIndexed }
                     repository.updateEmbedding(bookmark.id, embedding.toByteArray())
                     succeeded++
                 } catch (e: Exception) {
@@ -687,11 +1180,17 @@ class BookmarkViewModel(
                 }
             }
             // Report the real outcome: if every item failed, the previous code still claimed
-            // success, hiding a broken embedding provider from the user.
-            _syncState.value = if (succeeded == 0 && failed > 0) {
-                SyncUiState.Error("Embedding unavailable — generated 0 of $failed items")
+            // success, hiding a broken embedding provider from the user. Prefer the provider's
+            // specific reason (e.g. xAI 404 / no model provisioned) over a generic message.
+            if (succeeded == 0 && failed > 0) {
+                _syncState.value =
+                    SyncUiState.Error(embeddingService.lastError ?: "Embedding unavailable — generated 0 of $failed items")
             } else {
-                SyncUiState.Success("Embeddings generated for $succeeded items" + if (failed > 0) " ($failed skipped)" else "")
+                _syncState.value =
+                    SyncUiState.Success("Embeddings generated for $succeeded items" + if (failed > 0) " ($failed skipped)" else "")
+                // Fresh vectors → immediately auto-organise so the user sees cards flow into Spaces
+                // right after embedding (the whole point of embedding, from their perspective).
+                if (succeeded > 0) organizeByEmbedding(announce = true)
             }
         }
     }
@@ -715,8 +1214,25 @@ class BookmarkViewModel(
 
     // ── Existing operations ─────────────────────────────────────────────────
 
-    fun deleteBookmarks(ids: List<String>) = curationController.delete(ids)
-    fun updateCategoryForBookmarks(ids: List<String>, category: String) = curationController.updateCategory(ids, category)
+    fun deleteBookmarks(ids: List<String>) {
+        if (ids.isNotEmpty()) {
+            _spaceSuggestions.value = _spaceSuggestions.value - ids.toSet()
+        }
+        curationController.delete(ids)
+    }
+
+    /** Re-inserts bookmarks removed by [deleteBookmarks] — backs the feed's Undo snackbar action. */
+    fun restoreBookmarks(bookmarks: List<Bookmark>) {
+        if (bookmarks.isEmpty()) return
+        viewModelScope.launch { repository.restoreBookmarks(bookmarks) }
+    }
+    fun updateCategoryForBookmarks(ids: List<String>, category: String) {
+        if (ids.isNotEmpty()) {
+            _spaceSuggestions.value = _spaceSuggestions.value - ids.toSet()
+            scheduleOrganizeAfterEmbed()
+        }
+        curationController.updateCategory(ids, category)
+    }
 
     fun clearAllData() {
         val uid = _userId.value ?: return
@@ -754,7 +1270,7 @@ class BookmarkViewModel(
                 onCompleted("✨ Category: ${result.category}\n🏷️ Tags: ${result.tags.joinToString(", ")}\n📝 Summary: ${result.summary}")
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                onCompleted("❌ Analysis failed: ${e.localizedMessage ?: "Unknown error"}. Ensure a valid XAI_API_KEY is set.")
+                onCompleted("❌ Analysis failed: ${e.localizedMessage ?: "Unknown error"}. Add your xAI API key in Settings.")
             }
         }
     }
@@ -778,6 +1294,7 @@ class BookmarkViewModel(
     fun toggleChatSource(source: ChatSource) = chatController.toggleSource(source)
     fun clearChat() = chatController.clear()
     fun sendChatMessage(textInput: String) = chatController.send(textInput)
+    fun retryChatMessage(failedMessageId: String) = chatController.retryMessage(failedMessageId)
 
     fun addManualBookmark(text: String, onResult: (Result<Bookmark>) -> Unit = {}) {
         val uid = _userId.value ?: return
@@ -849,7 +1366,11 @@ data class ChatMessage(
     /** Source URLs that grounded an AI reply (from xAI Live Search). */
     val citations: List<String> = emptyList(),
     /** Which live sources were queried for this reply, for the "grounded in" badge. */
-    val groundedIn: List<ChatSource> = emptyList()
+    val groundedIn: List<ChatSource> = emptyList(),
+    /** True when the AI turn failed — renders as an error bubble with retry. */
+    val isError: Boolean = false,
+    /** Original user prompt to re-send on retry (only set for error bubbles). */
+    val retryPrompt: String? = null
 )
 
 enum class ChatSender { USER, AI }

@@ -384,7 +384,7 @@ fun ManualAddBookmarkDialog(
                             .fillMaxWidth()
                             .height(44.dp)
                             .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
-                            .clickable {
+                            .pressBounce {
                                 isPreviewLoading = true
                                 viewModel.getInstantSummaryPreview(textInput) { preview ->
                                     isPreviewLoading = false
@@ -413,7 +413,7 @@ fun ManualAddBookmarkDialog(
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 shape = RoundedCornerShape(14.dp)
                             )
-                            .clickable { dismiss() },
+                            .pressBounce { dismiss() },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -433,7 +433,7 @@ fun ManualAddBookmarkDialog(
                                 color = MaterialTheme.colorScheme.primary,
                                 shape = RoundedCornerShape(14.dp)
                             )
-                            .clickable {
+                            .pressBounce {
                                 if (textInput.isBlank()) {
                                     errorText = "Field cannot be empty"
                                 } else {
@@ -526,7 +526,7 @@ fun NotesEditorDialog(
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 shape = RoundedCornerShape(14.dp)
                             )
-                            .clickable { dismiss() },
+                            .pressBounce { dismiss() },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -546,7 +546,7 @@ fun NotesEditorDialog(
                                 color = MaterialTheme.colorScheme.tertiary,
                                 shape = RoundedCornerShape(14.dp)
                             )
-                            .clickable { onSave(noteInput.trim().ifEmpty { null }) }
+                            .pressBounce { onSave(noteInput.trim().ifEmpty { null }) }
                             .testTag("note_editor_save"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -605,7 +605,7 @@ fun BulkCategoryDialog(
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                     shape = RoundedCornerShape(10.dp)
                                 )
-                                .clickable {
+                                .pressBounce {
                                     onCategorySelected(cat)
                                     dismiss()
                                 }
@@ -641,7 +641,7 @@ fun BulkCategoryDialog(
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                             shape = RoundedCornerShape(14.dp)
                         )
-                        .clickable { dismiss() },
+                        .pressBounce { dismiss() },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -741,7 +741,7 @@ fun CurioEmptyState(tier: GlassTier, onActionClick: () -> Unit = {}) {
                         color = MaterialTheme.colorScheme.primary,
                         shape = RoundedCornerShape(16.dp)
                     )
-                    .clickable { onActionClick() }
+                    .pressBounce { onActionClick() }
                     .padding(horizontal = 24.dp, vertical = 12.dp)
                     .testTag("empty_state_action"),
                 contentAlignment = Alignment.Center

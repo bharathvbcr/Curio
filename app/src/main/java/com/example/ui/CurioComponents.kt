@@ -135,7 +135,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.alpha
-import androidx.compose.animation.core.animateFloatAsState
+import com.example.ui.theme.rememberReduceMotion
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.shape.CircleShape
@@ -250,8 +250,21 @@ internal fun MarkdownDetailPanel(label: String, body: String, accent: Color, ico
 }
 
 @Composable
-internal fun StatTile(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, tier: GlassTier, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.glassSurface(tier = tier, shape = RoundedCornerShape(18.dp)).padding(14.dp)) {
+internal fun StatTile(
+    label: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    color: Color,
+    tier: GlassTier,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
+    Box(
+        modifier = modifier
+            .then(if (onClick != null) Modifier.pressBounce(onClick = onClick) else Modifier)
+            .glassSurface(tier = tier, shape = RoundedCornerShape(18.dp))
+            .padding(14.dp)
+    ) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(modifier = Modifier.size(30.dp).clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(17.dp))
@@ -328,6 +341,7 @@ internal fun FeedIconAction(
     onClick: () -> Unit
 ) {
     val tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+    val reduceMotion = rememberReduceMotion()
     val spin = rememberInfiniteTransition(label = "spin")
     val angle by spin.animateFloat(
         initialValue = 0f, targetValue = 360f,
@@ -348,7 +362,7 @@ internal fun FeedIconAction(
             tint = tint,
             modifier = Modifier
                 .size(18.dp)
-                .then(if (spinning) Modifier.rotate(angle) else Modifier)
+                .then(if (spinning && !reduceMotion) Modifier.rotate(angle) else Modifier)
         )
     }
 }
@@ -399,6 +413,19 @@ internal fun QuickFilterPill(
 
 @Composable
 internal fun TypingDots(color: Color) {
+    val reduceMotion = rememberReduceMotion()
+    if (reduceMotion) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            repeat(3) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .background(color.copy(alpha = 0.75f), CircleShape)
+                )
+            }
+        }
+        return
+    }
     val transition = rememberInfiniteTransition(label = "typing")
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(3) { i ->

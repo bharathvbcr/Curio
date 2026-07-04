@@ -7,6 +7,7 @@ import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Query
 
 @JsonClass(generateAdapter = true)
 data class TokenResponse(
@@ -25,7 +26,10 @@ data class UserResponse(
 data class UserData(
     @Json(name = "id") val id: String,
     @Json(name = "name") val name: String,
-    @Json(name = "username") val username: String
+    @Json(name = "username") val username: String,
+    // Only present when the request asks for user.fields=profile_image_url. X returns the
+    // 48×48 "_normal" variant; the UI upgrades it to _400x400 for display.
+    @Json(name = "profile_image_url") val profileImageUrl: String? = null
 )
 
 /**
@@ -52,6 +56,7 @@ interface XAuthApi {
 
     @GET("2/users/me")
     suspend fun getUserMe(
-        @Header("Authorization") authorization: String
+        @Header("Authorization") authorization: String,
+        @Query("user.fields") userFields: String = "profile_image_url"
     ): UserResponse
 }

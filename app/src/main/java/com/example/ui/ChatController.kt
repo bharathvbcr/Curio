@@ -54,11 +54,13 @@ internal class ChatController(
         _isChatLoading.value = false
     }
 
-    fun send(textInput: String) {
+    fun send(textInput: String, includeUserMessage: Boolean = true) {
         if (textInput.isBlank()) return
         val sources = _chatSources.value
-        val userMsg = ChatMessage(id = java.util.UUID.randomUUID().toString(), sender = ChatSender.USER, text = textInput)
-        _chatMessages.value = _chatMessages.value + userMsg
+        if (includeUserMessage) {
+            val userMsg = ChatMessage(id = java.util.UUID.randomUUID().toString(), sender = ChatSender.USER, text = textInput)
+            _chatMessages.value = _chatMessages.value + userMsg
+        }
         _isChatLoading.value = true
         scope.launch {
             try {
@@ -92,13 +94,27 @@ internal class ChatController(
                 )
             } catch (e: Exception) {
                 _chatMessages.value = _chatMessages.value + ChatMessage(
-                    id = java.util.UUID.randomUUID().toString(), sender = ChatSender.AI,
-                    text = "Failed to respond: ${e.localizedMessage}"
+                    id = java.util.UUID.randomUUID().toString(),
+                    sender = ChatSender.AI,
+                    text = humanReadableError(e, ErrorContext.AI),
+                    isError = true,
+                    retryPrompt = textInput
                 )
             } finally {
                 _isChatLoading.value = false
             }
         }
+    }
+
+    /** Re-runs the failed prompt without duplicating the user's message bubble. */
+    fun retryMessage(failedMessageId: String) {
+        val messages = _chatMessages.value
+        val failedIndex = messages.indexOfFirst { it.id == failedMessageId }
+        if (failedIndex < 0) return
+        val failed = messages[failedIndex]
+        val prompt = failed.retryPrompt ?: return
+        _chatMessages.value = messages.filterIndexed { index, _ -> index != failedIndex }
+        send(prompt, includeUserMessage = false)
     }
 
     /** Canonical URL for a retrieved library item, used to cite library-grounded chat replies. */

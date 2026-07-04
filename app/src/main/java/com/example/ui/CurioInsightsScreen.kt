@@ -125,7 +125,10 @@ import com.example.ui.theme.GlassTier
 import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
+import com.example.ui.theme.motionSpec
 import com.example.ui.theme.pressBounce
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.curioAccentBrush
 import coil.compose.AsyncImage
@@ -150,7 +153,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Hub
@@ -163,7 +167,8 @@ import java.util.Locale
 internal fun CurioInsightsScreen(
     viewModel: BookmarkViewModel,
     tier: GlassTier,
-    onNavigateToFeed: () -> Unit
+    onNavigateToFeed: () -> Unit,
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
@@ -189,13 +194,35 @@ internal fun CurioInsightsScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("YOUR RESEARCH INDEX", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black, letterSpacing = 1.5.sp), color = Color.White.copy(alpha = 0.85f))
+                    if (stats.totalCount == 0) {
+                        Text("Start building your index", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black), color = Color.White)
+                        Text("Sync bookmarks from X to unlock insights, digests, and AI chat.", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = Color.White.copy(alpha = 0.85f))
+                        Spacer(Modifier.height(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color.White.copy(alpha = 0.2f))
+                                .pressBounce(onClick = onNavigateToFeed)
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Sync, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text("GO TO BOOKMARKS", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black), color = Color.White)
+                            }
+                        }
+                    } else {
                     Text("${stats.totalCount}", style = MaterialTheme.typography.displayLarge.copy(fontSize = 72.sp, fontWeight = FontWeight.Black, lineHeight = 74.sp, letterSpacing = (-3).sp), color = Color.White)
-                    val pct = if (stats.totalCount > 0) stats.curatedCount.toFloat() / stats.totalCount else 0f
-                    val animPct by animateFloatAsState(if (play) pct else 0f, CurioMotion.liquid(), label = "heroPct")
+                    val pct = stats.curatedCount.toFloat() / stats.totalCount
+                    val animPct by animateFloatAsState(if (play) pct else 0f, motionSpec(CurioMotion.liquid()), label = "heroPct")
                     Text("${stats.curatedCount} AI-curated · ${(pct * 100).toInt()}% complete", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = Color.White.copy(alpha = 0.9f))
                     Spacer(Modifier.height(6.dp))
-                    Box(modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.25f))) {
+                    Box(modifier = Modifier
+                        .fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.25f))
+                        .semantics { stateDescription = "${(pct * 100).toInt()} percent curated" }
+                    ) {
                         Box(modifier = Modifier.fillMaxWidth(animPct).fillMaxHeight().clip(RoundedCornerShape(50)).background(Color.White))
+                    }
                     }
                 }
             }
@@ -204,9 +231,15 @@ internal fun CurioInsightsScreen(
         // STAT TILES
         item {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                StatTile("OCR Syncs", stats.ocrCount.toString(), Icons.Default.Screenshot, MaterialTheme.colorScheme.secondary, tier, Modifier.weight(1f))
-                StatTile("Sources", stats.sourceCount.toString(), Icons.Default.Hub, Color(0xFFE53935), tier, Modifier.weight(1f))
-                StatTile("Deep", stats.deepAnalyzedCount.toString(), Icons.Default.AutoAwesome, MaterialTheme.colorScheme.tertiary, tier, Modifier.weight(1f))
+                StatTile("OCR Syncs", stats.ocrCount.toString(), Icons.Default.Screenshot, MaterialTheme.colorScheme.secondary, tier, Modifier.weight(1f)) {
+                    viewModel.clearAllFilters(); viewModel.setLibraryFilter(LibraryFilter.HAS_OCR); onNavigateToFeed()
+                }
+                StatTile("Sources", stats.sourceCount.toString(), Icons.Default.Hub, MaterialTheme.colorScheme.primary, tier, Modifier.weight(1f)) {
+                    viewModel.clearAllFilters(); viewModel.setLibraryFilter(LibraryFilter.HAS_SOURCE); onNavigateToFeed()
+                }
+                StatTile("Deep", stats.deepAnalyzedCount.toString(), Icons.Default.AutoAwesome, MaterialTheme.colorScheme.tertiary, tier, Modifier.weight(1f)) {
+                    viewModel.clearAllFilters(); viewModel.setLibraryFilter(LibraryFilter.DEEP_ANALYZED); onNavigateToFeed()
+                }
             }
         }
 
@@ -216,7 +249,9 @@ internal fun CurioInsightsScreen(
                 state = digest,
                 tier = tier,
                 onGenerate = { viewModel.generateWeeklyDigest() },
-                onDismiss = { viewModel.dismissDigest() }
+                onDismiss = { viewModel.dismissDigest() },
+                onNavigateToSettings = onNavigateToSettings,
+                onNavigateToFeed = onNavigateToFeed
             )
         }
 
@@ -242,10 +277,19 @@ internal fun CurioInsightsScreen(
                     val populatedSpaces = spaces.filter { it.count > 0 }.sortedByDescending { it.count }
                     if (populatedSpaces.isEmpty()) {
                         Text("No filed bookmarks yet. Curate a bookmark or add it to a Space to populate this view.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                .pressBounce(onClick = onNavigateToFeed)
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Text("GO TO BOOKMARKS", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+                        }
                     } else {
                         populatedSpaces.forEach { space ->
                             val pct = if (stats.totalCount > 0) space.count.toFloat() / stats.totalCount else 0f
-                            val animW by animateFloatAsState(if (play) pct else 0f, CurioMotion.liquid(), label = "bar_${space.id}")
+                            val animW by animateFloatAsState(if (play) pct else 0f, motionSpec(CurioMotion.liquid()), label = "bar_${space.id}")
                             val color = Color(space.color)
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(5.dp),
@@ -254,11 +298,14 @@ internal fun CurioInsightsScreen(
                                     .pressBounce { viewModel.clearAllFilters(); viewModel.selectSpace(space.id); onNavigateToFeed() }
                             ) {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                         Icon(spaceIcon(space.icon), contentDescription = null, tint = color, modifier = Modifier.size(13.dp))
                                         Text(space.name.uppercase(), style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                    Text("${space.count} · ${(pct * 100).toInt()}%", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f))
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("${space.count} · ${(pct * 100).toInt()}%", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f))
+                                        Icon(Icons.Default.ChevronRight, contentDescription = "Filter feed to this Space", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.size(16.dp))
+                                    }
                                 }
                                 Box(modifier = Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
                                     Box(modifier = Modifier.fillMaxWidth(animW).fillMaxHeight().clip(RoundedCornerShape(50)).background(Brush.horizontalGradient(listOf(color.copy(alpha = 0.7f), color))))
@@ -280,6 +327,15 @@ internal fun CurioInsightsScreen(
                     }
                     if (stats.topTags.isEmpty()) {
                         Text("No tags yet. Curate bookmarks to surface trending topics.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                .pressBounce(onClick = onNavigateToFeed)
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Text("GO TO BOOKMARKS", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+                        }
                     } else {
                         val maxCount = (stats.topTags.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1)
                         FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -317,9 +373,12 @@ private fun WeeklyDigestCard(
     state: DigestUiState,
     tier: GlassTier,
     onGenerate: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onNavigateToSettings: () -> Unit = {},
+    onNavigateToFeed: () -> Unit = {}
 ) {
     val accent = MaterialTheme.colorScheme.tertiary
+    val context = LocalContext.current
     Box(modifier = Modifier.fillMaxWidth().glassSurface(tier = tier).padding(18.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -367,8 +426,10 @@ private fun WeeklyDigestCard(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         DigestActionButton("REGENERATE", accent, onGenerate, modifier = Modifier.weight(1f))
-                        DigestActionButton("DISMISS", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), onDismiss, filled = false, modifier = Modifier.weight(1f))
+                        DigestActionButton("COPY", accent, { copyToClipboard(context, state.markdown, "Weekly Digest") }, modifier = Modifier.weight(1f))
+                        DigestActionButton("SHARE", accent, { shareBookmark(context, state.markdown) }, modifier = Modifier.weight(1f))
                     }
+                    DigestActionButton("DISMISS", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), onDismiss, filled = false, modifier = Modifier.fillMaxWidth())
                 }
                 is DigestUiState.Empty -> {
                     Text(
@@ -376,7 +437,10 @@ private fun WeeklyDigestCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
                     )
-                    DigestActionButton("DISMISS", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), onDismiss, filled = false)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DigestActionButton("GO TO BOOKMARKS", accent, onNavigateToFeed, modifier = Modifier.weight(1f))
+                        DigestActionButton("DISMISS", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), onDismiss, filled = false, modifier = Modifier.weight(1f))
+                    }
                 }
                 is DigestUiState.Error -> {
                     Text(
@@ -384,7 +448,12 @@ private fun WeeklyDigestCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
-                    DigestActionButton("TRY AGAIN", accent, onGenerate)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DigestActionButton("TRY AGAIN", accent, onGenerate, modifier = Modifier.weight(1f))
+                        if (state.message.contains("key", ignoreCase = true) || state.message.contains("auth", ignoreCase = true) || state.message.contains("sign in", ignoreCase = true)) {
+                            DigestActionButton("SETTINGS", MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), onNavigateToSettings, filled = false, modifier = Modifier.weight(1f))
+                        }
+                    }
                 }
             }
         }
@@ -419,8 +488,8 @@ private fun RediscoverCard(
                     color = accent,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onShuffle)
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                        .pressBounce(onClick = onShuffle)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
                 )
             }
             Text(
@@ -433,8 +502,8 @@ private fun RediscoverCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { openUrl(context, b.url) }
                         .background(accent.copy(alpha = 0.06f))
+                        .pressBounce { openUrl(context, b.url) }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -450,10 +519,13 @@ private fun RediscoverCard(
                         Text(
                             text = "${sourceDisplayName(b)} · saved ${relativeTime(b.createdAt)}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Icon(Icons.Default.Link, contentDescription = "Open link", tint = accent, modifier = Modifier.size(16.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Default.Link, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }
@@ -470,11 +542,11 @@ private fun DigestActionButton(
 ) {
     Box(
         modifier = modifier
-            .height(44.dp)
+            .height(48.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(if (filled) accent else accent.copy(alpha = 0.12f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 18.dp),
+            .pressBounce(onClick = onClick)
+            .padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(

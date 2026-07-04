@@ -18,7 +18,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.composed
-import androidx.compose.foundation.isSystemInDarkTheme
 
 /**
  * Performance tiers for dynamic glass rendering:
@@ -73,7 +72,9 @@ fun Modifier.glassSurface(
     edgeSheenColor: Color? = null,
     highlight: Boolean = true
 ): Modifier = composed {
-    val isDark = isSystemInDarkTheme()
+    // Read the app's resolved theme (honours the in-app Light/Dark override) rather than the raw
+    // system setting, so glass frosting matches the Material colors even when they disagree.
+    val isDark = LocalCurioDarkTheme.current
 
     val opacity = when (tier) {
         GlassTier.Full -> if (isDark) 0.34f else 0.20f

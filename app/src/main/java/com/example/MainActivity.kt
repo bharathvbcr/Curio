@@ -1,13 +1,17 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import com.example.ui.BookmarkApp
+import com.example.ui.CurioNotifier
 import com.example.ui.BookmarkViewModel
 import com.example.ui.screens.auth.AuthViewModel
 import org.koin.androidx.viewmodel.ext.android.viewModel
@@ -18,16 +22,18 @@ class MainActivity : ComponentActivity() {
     private val authViewModel: AuthViewModel by viewModel()
     private val bookmarkViewModel: BookmarkViewModel by viewModel()
 
+    // POST_NOTIFICATIONS runtime prompt (Android 13+). Result ignored — a denial simply means the
+    // unified live activity / reminders stay silent; the app carries on unaffected.
+    private val requestNotificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Launch background diagnostic/sweeper service
-        try {
-            val serviceIntent = Intent(this, com.example.background.BookmarkSweeperService::class.java)
-            startService(serviceIntent)
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Failed to start BookmarkSweeperService: ${e.message}")
-        }
+        // The periodic stale-link sweep is scheduled via WorkManager in CurioApplication
+        // (BookmarkSweeperScheduler) — no foreground service is started here.
+
+        maybeRequestNotificationPermission()
 
         enableEdgeToEdge()
 
@@ -53,6 +59,23 @@ class MainActivity : ComponentActivity() {
         intent.data?.let { handleDeepLink(it) }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // The user is now in the app, so any "digest ready" / error banner in the live activity has
+        // served its purpose — clear it so a stale notification doesn't linger.
+        (application as? CurioApplication)?.appContainer?.curioActivityController?.clearAttention()
+        // Background embedding may have auto-filed cards; refresh medium-confidence suggestions.
+        bookmarkViewModel.refreshSuggestionsOnForeground()
+    }
+
+    /** Requests POST_NOTIFICATIONS once on Android 13+ if not already granted. */
+    private fun maybeRequestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     /**
      * Handles a tweet / URL / text shared into Curio from another app's share sheet
      * ([Intent.ACTION_SEND], `text/plain`). Combines the optional subject (e.g. an article title)
@@ -71,13 +94,13 @@ class MainActivity : ComponentActivity() {
             .trim()
 
         if (payload.isEmpty()) {
-            Toast.makeText(this, "Nothing to save", Toast.LENGTH_SHORT).show()
+            CurioNotifier.notify(this, "Nothing to save")
             return
         }
 
         val ingestedNow = bookmarkViewModel.captureSharedText(payload)
         val message = if (ingestedNow) "Saved to Curio" else "Sign in to Curio to finish saving"
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        CurioNotifier.notify(this, message)
     }
 
     private fun handleDeepLink(uri: Uri) {
@@ -85,10 +108,12 @@ class MainActivity : ComponentActivity() {
             authViewModel.handleRedirect(uri) { result ->
                 result.fold(
                     onSuccess = {
-                        Toast.makeText(this, "Logged in successfully to X!", Toast.LENGTH_SHORT).show()
+                        authViewModel.reportLoginSuccess()
                     },
                     onFailure = { error ->
-                        Toast.makeText(this, "Login connection failed: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
+                        authViewModel.reportLoginFailure(
+                            "Login connection failed: ${error.localizedMessage ?: "Unknown error"}"
+                        )
                     }
                 )
             }
@@ -105,7 +130,7 @@ class MainActivity : ComponentActivity() {
             }
             startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(this, "Could not open browser. Please check details.", Toast.LENGTH_SHORT).show()
+            CurioNotifier.notify(this, "Could not open browser. Please check details.")
         }
     }
 }

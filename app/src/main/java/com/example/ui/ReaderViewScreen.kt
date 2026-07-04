@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import android.content.Context
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -130,8 +131,10 @@ import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
 import com.example.ui.theme.pressBounce
+import com.example.ui.theme.tappable
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.curioAccentBrush
+import com.example.ui.theme.CurioColors
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.layout.aspectRatio
@@ -171,8 +174,19 @@ fun ReaderViewScreen(
     darkTheme: Boolean,
     dynamicColor: Boolean
 ) {
-    var fontScale by remember { mutableStateOf(1.0f) } // 1.0 = Medium, 0.85 = Small, 1.25 = Large
     val context = LocalContext.current
+    var fontScale by remember {
+        mutableStateOf(
+            context.getSharedPreferences("curio_reader", Context.MODE_PRIVATE)
+                .getFloat("font_scale", 1.0f)
+        )
+    }
+    LaunchedEffect(fontScale) {
+        context.getSharedPreferences("curio_reader", Context.MODE_PRIVATE)
+            .edit()
+            .putFloat("font_scale", fontScale)
+            .apply()
+    }
     val formattedTime = remember(bookmark.createdAt) {
         SimpleDateFormat("MMM dd, yyyy - HH:mm", Locale.getDefault()).format(java.util.Date(bookmark.createdAt))
     }
@@ -243,39 +257,57 @@ fun ReaderViewScreen(
                         Text(
                             text = "A-",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = if (fontScale == 0.85f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .semantics {
                                     role = androidx.compose.ui.semantics.Role.Button
                                     contentDescription = "Decrease font size"
                                 }
+                                .clip(RoundedCornerShape(8.dp))
+                                .then(
+                                    if (fontScale == 0.85f) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                                    else Modifier
+                                )
                                 .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                .clickable { fontScale = 0.85f }
+                                .pressBounce(pressedScale = 0.9f) { fontScale = 0.85f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_out")
                         )
                         Text(
                             text = "A",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                            color = if (fontScale == 1.0f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .semantics {
                                     role = androidx.compose.ui.semantics.Role.Button
                                     contentDescription = "Reset font size"
                                 }
+                                .clip(RoundedCornerShape(8.dp))
+                                .then(
+                                    if (fontScale == 1.0f) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                                    else Modifier
+                                )
                                 .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                .clickable { fontScale = 1.0f }
+                                .pressBounce(pressedScale = 0.9f) { fontScale = 1.0f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_reset")
                         )
                         Text(
                             text = "A+",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                            color = if (fontScale == 1.25f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .semantics {
                                     role = androidx.compose.ui.semantics.Role.Button
                                     contentDescription = "Increase font size"
                                 }
+                                .clip(RoundedCornerShape(8.dp))
+                                .then(
+                                    if (fontScale == 1.25f) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                                    else Modifier
+                                )
                                 .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                .clickable { fontScale = 1.25f }
+                                .pressBounce(pressedScale = 0.9f) { fontScale = 1.25f }
                                 .padding(8.dp)
                                 .testTag("reader_zoom_in")
                         )
@@ -328,9 +360,11 @@ fun ReaderViewScreen(
                     // Title
                     Text(
                         text = bookmark.title?.ifBlank { "Untitled Curio" } ?: "Untitled Curio",
+                        // Title tracks the reader's own A-/A/A+ scale so hierarchy holds at every size.
                         style = MaterialTheme.typography.headlineLarge.copy(
                             fontWeight = FontWeight.Black,
-                            lineHeight = 38.sp
+                            fontSize = (32 * fontScale).sp,
+                            lineHeight = (38 * fontScale).sp
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.testTag("reader_title")
@@ -344,12 +378,12 @@ fun ReaderViewScreen(
                                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
                             ),
                             color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.tappable {
                                 try {
                                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(urlString))
                                     context.startActivity(intent)
                                 } catch (e: Exception) {
-                                    // Ignored
+                                    CurioNotifier.notify(context, "Couldn't open link")
                                 }
                             }
                         )
@@ -359,12 +393,7 @@ fun ReaderViewScreen(
 
                     // Source paper / repo metadata (Phase 8)
                     if (bookmark.sourceType != null) {
-                        val srcColor = when (bookmark.sourceType) {
-                            SourceType.ARXIV -> Color(0xFFB71C1C)
-                            SourceType.GITHUB -> Color(0xFF1B5E20)
-                            SourceType.HUGGING_FACE -> Color(0xFFF57F17)
-                            else -> MaterialTheme.colorScheme.secondary
-                        }
+                        val srcColor = CurioColors.sourceAccent(bookmark.sourceType, fallback = MaterialTheme.colorScheme.secondary)
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (!bookmark.sourceTitle.isNullOrBlank()) {
                                 Text(
@@ -425,13 +454,14 @@ fun ReaderViewScreen(
                                 letterSpacing = 1.sp
                             )
                         )
-                        Text(
-                            text = bookmark.deepSummary,
+                        MarkdownText(
+                            markdown = bookmark.deepSummary,
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontSize = (14 * fontScale).sp,
                                 lineHeight = (22 * fontScale).sp
                             ),
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                            accent = MaterialTheme.colorScheme.tertiary
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }

@@ -4,6 +4,16 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Curio's single unified live-activity notification + read-later reminders (Android 13+
+         requires the runtime prompt, requested from MainActivity). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Package visibility (Android 11+): lets Curio resolve and write to the ChronosFlow interop
+         provider for "remind me to read later" / inbox / task handoffs. -->
+    <queries>
+        <package android:name="com.ChronosFlow.VBCR" />
+    </queries>
+
     <application
         android:name=".CurioApplication"
         android:allowBackup="true"
@@ -43,10 +53,6 @@
                 <data android:scheme="curio-oauth" android:host="callback" />
             </intent-filter>
         </activity>
-
-        <service
-            android:name=".background.BookmarkSweeperService"
-            android:exported="false" />
 
         <!-- AppFunctions: platform-side service for Android 16+ (API 36+). The
              enablePlatformAppFunctionService boolean is provided by the appfunctions library's

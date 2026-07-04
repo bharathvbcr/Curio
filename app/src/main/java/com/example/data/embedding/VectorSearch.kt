@@ -18,6 +18,24 @@ object VectorSearch {
         return if (denom < 1e-10f) 0f else dot / denom
     }
 
+    /** Dot product for same-dimension vectors (used after L2 normalization → cosine). */
+    fun dotProduct(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size) return 0f
+        var dot = 0f
+        for (i in a.indices) dot += a[i] * b[i]
+        return dot
+    }
+
+    /** L2-normalised copy; null when the vector is empty or near-zero. */
+    fun normalizeL2(v: FloatArray): FloatArray? {
+        if (v.isEmpty()) return null
+        var norm = 0f
+        for (x in v) norm += x * x
+        val d = sqrt(norm)
+        if (d < 1e-10f) return null
+        return FloatArray(v.size) { i -> v[i] / d }
+    }
+
     /** Default cosine floor below which a candidate is considered irrelevant to the query. */
     const val DEFAULT_MIN_SIMILARITY = 0.30f
 

@@ -32,4 +32,11 @@ interface AuthRepository {
      * Purges auth credentials silently, notifying all sessions.
      */
     suspend fun logout()
+
+    /**
+     * Best-effort backfill of public profile fields (handle, display name, profile photo) for a
+     * session that predates their storage — e.g. users who signed in before the profile photo was
+     * fetched. No-op when signed out or when the photo is already cached; never throws.
+     */
+    suspend fun refreshProfile()
 }

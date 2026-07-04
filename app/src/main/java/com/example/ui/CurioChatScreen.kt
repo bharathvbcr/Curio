@@ -103,7 +103,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.AutoAwesome
 import android.content.Intent
@@ -125,6 +125,13 @@ import com.example.ui.theme.glassSurface
 import com.example.ui.theme.rememberGlassTier
 import com.example.ui.theme.CurioMotion
 import com.example.ui.theme.pressBounce
+import com.example.ui.theme.minTouchTarget
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import com.example.ui.theme.bounceScale
 import com.example.ui.theme.curioAccentBrush
 import coil.compose.AsyncImage
@@ -167,14 +174,21 @@ import java.util.Locale
 @Composable
 internal fun CurioChatScreen(
     viewModel: BookmarkViewModel,
-    tier: GlassTier
+    tier: GlassTier,
+    onNavigateToBookmarks: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val isLoading by viewModel.isChatLoading.collectAsStateWithLifecycle()
     val activeSources by viewModel.chatSources.collectAsStateWithLifecycle()
+    val stats by viewModel.stats.collectAsStateWithLifecycle()
+    val xaiKeyConfigured by viewModel.xaiKeyConfigured.collectAsStateWithLifecycle()
     var textInput by remember { mutableStateOf("") }
+    var showClearConfirm by remember { mutableStateOf(false) }
     val lazyListState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     LaunchedEffect(messages.size) {
         val target = messages.size - 1 + (if (isLoading) 1 else 0)
@@ -188,6 +202,25 @@ internal fun CurioChatScreen(
         "Suggest a paper to read next"
     )
 
+    // Clearing a whole research conversation is destructive and irreversible — confirm first.
+    if (showClearConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            icon = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Clear conversation?") },
+            text = { Text("This removes every message in this chat. Your saved bookmarks aren't affected.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showClearConfirm = false
+                    viewModel.clearChat()
+                }) { Text("Clear", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize().imePadding().padding(horizontal = 16.dp)) {
         Column(modifier = Modifier.fillMaxSize().padding(bottom = 132.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Spacer(Modifier.height(4.dp))
@@ -198,42 +231,65 @@ internal fun CurioChatScreen(
                 ) { Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp)) }
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Curio AI", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black))
-                    Text("Grounded in your saved research", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+                    Text("Grounded in your saved research", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 AnimatedVisibility(visible = messages.isNotEmpty(), enter = fadeIn(), exit = fadeOut()) {
                     IconButton(
-                        onClick = { viewModel.clearChat() },
+                        onClick = { showClearConfirm = true },
                         modifier = Modifier.testTag("chat_clear_button")
                     ) {
                         Icon(
                             Icons.Default.DeleteSweep,
                             contentDescription = "Clear conversation",
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
 
             if (messages.isEmpty()) {
-                // Welcome + suggestion chips
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         modifier = Modifier.size(76.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center
                     ) { Icon(Icons.Default.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(38.dp)) }
                     Spacer(Modifier.height(16.dp))
-                    Text("Ask anything about your index", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black), textAlign = TextAlign.Center)
-                    Text("I read across everything you've saved.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(20.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth(), maxItemsInEachRow = 2) {
-                        suggestions.forEach { s ->
+                    when {
+                        !xaiKeyConfigured -> {
+                            Text("Connect your xAI key", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black), textAlign = TextAlign.Center)
+                            Text("Add your API key in Settings to chat with Grok about your saved research.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp))
+                            Spacer(Modifier.height(16.dp))
                             Box(
-                                modifier = Modifier
-                                    .glassSurface(tier = tier, shape = RoundedCornerShape(16.dp))
-                                    .pressBounce { viewModel.sendChatMessage(s) }
-                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                                modifier = Modifier.glassSurface(tier = tier, shape = RoundedCornerShape(16.dp)).pressBounce(onClick = onNavigateToSettings).padding(horizontal = 20.dp, vertical = 12.dp)
                             ) {
-                                Text(s, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface)
+                                Text("OPEN SETTINGS", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        stats.totalCount == 0 -> {
+                            Text("Your index is empty", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black), textAlign = TextAlign.Center)
+                            Text("Sync bookmarks from X first, then ask Curio to summarize or explore them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp))
+                            Spacer(Modifier.height(16.dp))
+                            Box(
+                                modifier = Modifier.glassSurface(tier = tier, shape = RoundedCornerShape(16.dp)).pressBounce(onClick = onNavigateToBookmarks).padding(horizontal = 20.dp, vertical = 12.dp)
+                            ) {
+                                Text("GO TO BOOKMARKS", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        else -> {
+                            Text("Ask anything about your index", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black), textAlign = TextAlign.Center)
+                            Text("I read across everything you've saved.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                            Spacer(Modifier.height(20.dp))
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth(), maxItemsInEachRow = 2) {
+                                suggestions.forEach { s ->
+                                    Box(
+                                        modifier = Modifier
+                                            .glassSurface(tier = tier, shape = RoundedCornerShape(16.dp))
+                                            .pressBounce(enabled = !isLoading) { viewModel.sendChatMessage(s) }
+                                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                                    ) {
+                                        Text(s, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                }
                             }
                         }
                     }
@@ -242,10 +298,25 @@ internal fun CurioChatScreen(
                 androidx.compose.foundation.lazy.LazyColumn(state = lazyListState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(messages, key = { it.id }) { msg ->
                         val isAi = msg.sender == com.example.ui.ChatSender.AI
+                        val isError = msg.isError
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (isAi) Arrangement.Start else Arrangement.End, verticalAlignment = Alignment.Top) {
                             if (isAi) {
-                                Box(modifier = Modifier.size(28.dp).clip(CircleShape).background(curioAccentBrush(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)), contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .then(
+                                            if (isError) Modifier.background(MaterialTheme.colorScheme.error.copy(alpha = 0.2f))
+                                            else Modifier.background(curioAccentBrush(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary))
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        if (isError) Icons.Default.ErrorOutline else Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = if (isError) MaterialTheme.colorScheme.error else Color.White,
+                                        modifier = Modifier.size(15.dp)
+                                    )
                                 }
                                 Spacer(Modifier.width(8.dp))
                             }
@@ -257,24 +328,51 @@ internal fun CurioChatScreen(
                                 ChatBubble(
                                     text = msg.text,
                                     isAi = isAi,
+                                    isError = isError,
                                     tier = tier,
                                     modifier = Modifier.testTag("chat_msg_bubble_${msg.id}"),
-                                    onLongPress = { clipboard.setText(AnnotatedString(msg.text)) }
+                                    onLongPress = {
+                                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        clipboard.setText(AnnotatedString(msg.text))
+                                        CurioNotifier.notify(context, "Copied to clipboard")
+                                    }
                                 )
-                                if (isAi && msg.citations.isNotEmpty()) {
-                                    CitationStrip(msg.citations)
+                                if (isError && msg.retryPrompt != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .glassSurface(tier = tier, shape = RoundedCornerShape(12.dp), tint = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f))
+                                            .pressBounce { viewModel.retryChatMessage(msg.id) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                            .testTag("chat_retry_${msg.id}")
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Icon(Icons.Default.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                                            Text("Retry", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black), color = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                                if (isAi && !isError && msg.citations.isNotEmpty()) {
+                                    CitationStrip(msg.citations, context)
                                 }
                             }
                         }
                     }
                     if (isLoading) {
                         item {
+                            val loadingLabel = when {
+                                ChatSource.LIBRARY in activeSources && activeSources.size == 1 -> "Searching your library…"
+                                activeSources.any { it != ChatSource.LIBRARY } -> "Searching live sources…"
+                                else -> "Thinking…"
+                            }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Box(modifier = Modifier.size(28.dp).clip(CircleShape).background(curioAccentBrush(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)), contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
                                 }
-                                Box(modifier = Modifier.glassSurface(tier = tier, shape = RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 14.dp)) {
-                                    TypingDots(MaterialTheme.colorScheme.primary)
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(modifier = Modifier.glassSurface(tier = tier, shape = RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 14.dp)) {
+                                        TypingDots(MaterialTheme.colorScheme.primary)
+                                    }
+                                    Text(loadingLabel, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
                                 }
                             }
                         }
@@ -291,13 +389,15 @@ internal fun CurioChatScreen(
             SourceChipRow(
                 activeSources = activeSources,
                 onToggle = { viewModel.toggleChatSource(it) },
-                tier = tier
+                tier = tier,
+                enabled = !isLoading
             )
             Box(modifier = Modifier.fillMaxWidth().glassSurface(tier = tier, shape = RoundedCornerShape(24.dp)).padding(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     androidx.compose.material3.TextField(
                         value = textInput,
                         onValueChange = { textInput = it },
+                        enabled = !isLoading,
                         placeholder = { Text("Ask Curio anything…", style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))) },
                         modifier = Modifier.weight(1f).testTag("chatbot_text_input"),
                         textStyle = MaterialTheme.typography.bodyMedium,
@@ -310,19 +410,22 @@ internal fun CurioChatScreen(
                         ),
                         singleLine = true
                     )
+                    val sendEnabled = textInput.isNotBlank() && !isLoading
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
+                            .size(48.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(if (textInput.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f) else Color.Transparent)
                             .then(if (textInput.isNotBlank()) Modifier.background(curioAccentBrush(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary), RoundedCornerShape(16.dp)) else Modifier)
-                            .pressBounce(enabled = textInput.isNotBlank()) {
-                                if (textInput.isNotBlank()) { viewModel.sendChatMessage(textInput); textInput = "" }
+                            // Tell TalkBack the button is unavailable when there's nothing to send / a reply is streaming.
+                            .semantics { if (!sendEnabled) disabled() }
+                            .pressBounce(enabled = sendEnabled) {
+                                if (sendEnabled) { viewModel.sendChatMessage(textInput); textInput = "" }
                             }
                             .testTag("chatbot_send_button"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = if (textInput.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f) else Color.White, modifier = Modifier.size(20.dp))
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send message", tint = if (textInput.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f) else Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -336,6 +439,7 @@ internal fun CurioChatScreen(
 private fun ChatBubble(
     text: String,
     isAi: Boolean,
+    isError: Boolean = false,
     tier: GlassTier,
     modifier: Modifier = Modifier,
     onLongPress: () -> Unit
@@ -345,8 +449,16 @@ private fun ChatBubble(
             .glassSurface(
                 tier = tier,
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = if (isAi) 4.dp else 18.dp, bottomEnd = if (isAi) 18.dp else 4.dp),
-                tint = if (isAi) MaterialTheme.colorScheme.surface.copy(alpha = 0.55f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                borderColor = if (isAi) Color.Transparent else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                tint = when {
+                    isError -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                    isAi -> MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                },
+                borderColor = when {
+                    isError -> MaterialTheme.colorScheme.error.copy(alpha = 0.35f)
+                    isAi -> Color.Transparent
+                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                }
             )
             .combinedClickable(onClick = {}, onLongClick = onLongPress)
             .padding(13.dp)
@@ -363,8 +475,7 @@ private fun ChatBubble(
 /** Tappable source citations rendered under a grounded AI reply. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CitationStrip(citations: List<String>) {
-    val uriHandler = LocalUriHandler.current
+private fun CitationStrip(citations: List<String>, context: android.content.Context) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         citations.take(8).forEachIndexed { index, url ->
             val host = remember(url) {
@@ -374,10 +485,12 @@ private fun CitationStrip(citations: List<String>) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
+                    .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                    .clickable { runCatching { uriHandler.openUri(url) } }
-                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                    .semantics(mergeDescendants = true) { contentDescription = "Open source ${index + 1}: $host" }
+                    .pressBounce(pressedScale = 0.92f) { openUrl(context, url) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
                 Text(
@@ -397,10 +510,14 @@ private fun CitationStrip(citations: List<String>) {
 private fun SourceChipRow(
     activeSources: Set<ChatSource>,
     onToggle: (ChatSource) -> Unit,
-    tier: GlassTier
+    tier: GlassTier,
+    enabled: Boolean = true
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .alpha(if (enabled) 1f else 0.55f),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -416,6 +533,7 @@ private fun SourceChipRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
+                    .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .then(
                         if (selected) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
@@ -426,7 +544,9 @@ private fun SourceChipRow(
                         color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Color.Transparent,
                         shape = RoundedCornerShape(14.dp)
                     )
-                    .pressBounce { onToggle(source) }
+                    // A grounding source is an on/off toggle — announce its state to TalkBack.
+                    .semantics { role = Role.Switch; stateDescription = if (selected) "On" else "Off" }
+                    .pressBounce(enabled = enabled) { if (enabled) onToggle(source) }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
                     .testTag("chat_source_${source.name}")
             ) {
@@ -442,7 +562,7 @@ private fun SourceChipRow(
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                 )
                 if (selected) {
-                    Icon(Icons.Default.Check, contentDescription = "Active", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
+                    Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
                 }
             }
         }

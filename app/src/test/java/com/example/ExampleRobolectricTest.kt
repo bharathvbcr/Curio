@@ -46,8 +46,29 @@ class FakeBookmarkRepository : BookmarkRepository {
     override suspend fun getBookmarkById(id: String): Bookmark? =
         bookmarksFlow.value.find { it.id == id }
 
+    override suspend fun searchBookmarks(userId: String, query: String): List<Bookmark> {
+        val all = bookmarksFlow.value.sortedByDescending { it.createdAt }
+        if (query.isBlank()) return all
+        return all.filter {
+            it.text.contains(query, ignoreCase = true) ||
+                (it.title?.contains(query, ignoreCase = true) == true) ||
+                (it.summary?.contains(query, ignoreCase = true) == true) ||
+                (it.ocrText?.contains(query, ignoreCase = true) == true)
+        }
+    }
+
     override suspend fun syncBookmarks(userId: String, fetchNextPage: Boolean): Result<Unit> =
         Result.success(Unit)
+
+    override suspend fun swapCreatedAt(id1: String, ts1: Long, id2: String, ts2: Long) {
+        bookmarksFlow.value = bookmarksFlow.value.map {
+            when (it.id) {
+                id1 -> it.copy(createdAt = ts2)
+                id2 -> it.copy(createdAt = ts1)
+                else -> it
+            }
+        }
+    }
 
     override suspend fun clearAll(userId: String) {
         bookmarksFlow.value = emptyList()
@@ -95,6 +116,12 @@ class FakeBookmarkRepository : BookmarkRepository {
         bookmarksFlow.value = bookmarksFlow.value.filter { it.id !in ids }
     }
 
+    override suspend fun restoreBookmarks(bookmarks: List<Bookmark>) {
+        val existing = bookmarksFlow.value.associateBy { it.id }.toMutableMap()
+        bookmarks.forEach { existing[it.id] = it }
+        bookmarksFlow.value = existing.values.sortedByDescending { it.createdAt }
+    }
+
     override suspend fun updateCategoryForIds(ids: List<String>, category: String) {
         bookmarksFlow.value = bookmarksFlow.value.map {
             if (it.id in ids) it.copy(category = category) else it
@@ -115,10 +142,12 @@ class FakeBookmarkRepository : BookmarkRepository {
     ) {}
 
     override suspend fun incrementReferenceCount(sourceId: String, userId: String) {}
-    override suspend fun deduplicateBySource(userId: String) {}
+    override suspend fun deduplicateBySource(userId: String): Int = 0
     override suspend fun updateEmbedding(id: String, embedding: ByteArray) {}
+    override suspend fun updateEmbeddings(updates: List<Pair<String, ByteArray>>) {}
     override suspend fun getBookmarksWithEmbeddings(userId: String): List<Pair<String, ByteArray>> = emptyList()
-    override suspend fun getUnembeddedAnalyzed(): List<Bookmark> = emptyList()
+    override suspend fun getUnembeddedAnalyzed(userId: String): List<Bookmark> = emptyList()
+    override suspend fun getAllUnembedded(userId: String): List<Bookmark> = emptyList()
     override suspend fun clearAllEmbeddings() {}
     override suspend fun updateDeepSummary(id: String, deepSummary: String) {}
 
@@ -141,7 +170,7 @@ class FakeBookmarkRepository : BookmarkRepository {
     }
 
     // ── Spaces ───────────────────────────────────────────────────────────────
-    private val spacesFlow = MutableStateFlow<List<com.example.domain.model.Space>>(emptyList())
+    val spacesFlow = MutableStateFlow<List<com.example.domain.model.Space>>(emptyList())
 
     override fun getSpacesFlow(userId: String): Flow<List<com.example.domain.model.Space>> = spacesFlow
 
@@ -180,7 +209,7 @@ class FakeBookmarkRepository : BookmarkRepository {
     }
 
     override suspend fun fileByRules(bookmark: com.example.domain.model.Bookmark): String? {
-        if (bookmark.spaceId != null) return null
+        if (!com.example.domain.model.CategorySpaces.bookmarkEligibleForRuleFiling(bookmark.spaceId)) return null
         val match = spacesFlow.value.firstOrNull { it.rules.autoFile && it.rules.matches(bookmark) } ?: return null
         assignToSpace(listOf(bookmark.id), match.id)
         return match.id
@@ -189,7 +218,9 @@ class FakeBookmarkRepository : BookmarkRepository {
     override suspend fun applySpaceRules(spaceId: String): Int {
         val space = spacesFlow.value.firstOrNull { it.id == spaceId } ?: return 0
         if (!space.rules.isActive) return 0
-        val matches = bookmarksFlow.value.filter { it.spaceId == null && space.rules.matches(it) }.map { it.id }
+        val matches = bookmarksFlow.value
+            .filter { com.example.domain.model.CategorySpaces.bookmarkEligibleForRuleFiling(it.spaceId) && space.rules.matches(it) }
+            .map { it.id }
         if (matches.isNotEmpty()) assignToSpace(matches, spaceId)
         return matches.size
     }
@@ -198,7 +229,9 @@ class FakeBookmarkRepository : BookmarkRepository {
         val smart = spacesFlow.value.filter { it.rules.autoFile && it.rules.isActive }
         if (smart.isEmpty()) return 0
         var filed = 0
-        bookmarksFlow.value.filter { it.userId == userId && it.spaceId == null }.forEach { b ->
+        bookmarksFlow.value
+            .filter { it.userId == userId && com.example.domain.model.CategorySpaces.bookmarkEligibleForRuleFiling(it.spaceId) }
+            .forEach { b ->
             val target = smart.firstOrNull { it.rules.matches(b) } ?: return@forEach
             assignToSpace(listOf(b.id), target.id)
             filed++
@@ -209,7 +242,7 @@ class FakeBookmarkRepository : BookmarkRepository {
     override suspend fun ensureCategorySpace(userId: String, category: String): String? {
         val key = category.trim().lowercase()
         if (key.isEmpty()) return null
-        val id = "space_cat_${userId}_$key"
+        val id = "${com.example.domain.model.CategorySpaces.SPACE_ID_PREFIX}${userId}_$key"
         if (spacesFlow.value.none { it.id == id }) {
             val meta = com.example.domain.model.CategorySpaces.forCategory(key)
             spacesFlow.value = spacesFlow.value + com.example.domain.model.Space(id, userId, meta.name, meta.color, meta.icon, System.currentTimeMillis())
@@ -219,13 +252,16 @@ class FakeBookmarkRepository : BookmarkRepository {
 
     override suspend fun backfillCategorySpaces(userId: String) {
         bookmarksFlow.value
-            .filter { it.userId == userId && it.spaceId == null && !it.category.isNullOrBlank() }
+            .filter { it.userId == userId && it.spaceId.isNullOrBlank() && !it.category.isNullOrBlank() }
             .groupBy { it.category!!.trim().lowercase() }
             .forEach { (category, items) ->
                 val spaceId = ensureCategorySpace(userId, category) ?: return@forEach
                 assignToSpace(items.map { it.id }, spaceId)
             }
     }
+
+    override suspend fun organizeByEmbedding(userId: String): com.example.domain.model.OrganizeResult =
+        com.example.domain.model.OrganizeResult.EMPTY
 }
 
 class FakeXAiApi : XAiApi {
@@ -242,10 +278,19 @@ class FakeXAiApi : XAiApi {
         request: XAiEmbeddingRequest
     ): XAiEmbeddingResponse = XAiEmbeddingResponse(data = emptyList())
 
+    override suspend fun listEmbeddingModels(
+        authorization: String
+    ): com.example.data.remote.XAiEmbeddingModelsResponse =
+        com.example.data.remote.XAiEmbeddingModelsResponse()
+
     override suspend fun generateImages(
         authorization: String,
         request: com.example.data.remote.XAiImageRequest
     ): com.example.data.remote.XAiImageResponse = com.example.data.remote.XAiImageResponse(data = emptyList())
+
+    override suspend fun getApiKeyInfo(
+        authorization: String
+    ): com.example.data.remote.XAiApiKeyInfo = com.example.data.remote.XAiApiKeyInfo()
 }
 
 class FakeGithubApi : GithubApi {
@@ -300,7 +345,13 @@ class ExampleRobolectricTest {
             ApplicationProvider.getApplicationContext(),
             tokenStore
         )
-        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager, tokenStore)
+        val chronosFlowBridge = com.example.interop.ChronosFlowBridge(ApplicationProvider.getApplicationContext())
+        val curioActivityController = com.example.notifications.CurioActivityController(
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()),
+            com.example.notifications.CurioNotifier(ApplicationProvider.getApplicationContext())
+        )
+        val reminderScheduler = com.example.notifications.ReminderScheduler(ApplicationProvider.getApplicationContext())
+        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager, tokenStore, chronosFlowBridge, curioActivityController, reminderScheduler)
 
         val mockBookmarks = listOf(
             Bookmark(
