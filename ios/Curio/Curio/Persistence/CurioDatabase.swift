@@ -34,7 +34,7 @@ final class CurioDatabase: Sendable {
     private static let logger = Logger(subsystem: "com.example.curio", category: "Persistence")
 
     private init() {
-        let schema = Schema([BookmarkModel.self, SpaceModel.self])
+        let schema = Schema([BookmarkModel.self, SpaceModel.self, SemanticCacheEntry.self])
         let storeURL = Self.storeURL()
         let configuration = ModelConfiguration(url: storeURL)
 

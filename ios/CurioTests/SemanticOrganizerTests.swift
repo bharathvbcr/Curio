@@ -7,7 +7,7 @@ final class SemanticOrganizerTests: XCTestCase {
     private let aDir: [Float] = [1, 0, 0]
     private let bDir: [Float] = [0, 1, 0]
 
-    private func near(_ base: [Float], jitter: Float) -> [Float] {
+    private func near(_ base: [Float], _ jitter: Float) -> [Float] {
         [base[0] + jitter, base[1] + jitter / 2, base[2]]
     }
 

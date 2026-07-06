@@ -335,12 +335,12 @@ actor OnDeviceEmbeddingProvider: EmbeddingProvider {
 struct EmbeddingProviderSelector: EmbeddingProvider {
     private let onDevice: OnDeviceEmbeddingProvider
     private let cloud: EmbeddingProvider
-    private let backend: () -> EmbeddingBackend
+    private let backend: @Sendable () -> EmbeddingBackend
 
     init(
         onDevice: OnDeviceEmbeddingProvider,
         cloud: EmbeddingProvider,
-        backend: @escaping () -> EmbeddingBackend = { EmbeddingPreference.get() }
+        backend: @escaping @Sendable () -> EmbeddingBackend = { EmbeddingPreference.get() }
     ) {
         self.onDevice = onDevice
         self.cloud = cloud
@@ -367,7 +367,9 @@ struct EmbeddingProviderSelector: EmbeddingProvider {
             return await cloud.embedDocument(bookmark)
         case .auto:
             if onDevice.isOnDevice() {
-                return await onDevice.embedDocument(bookmark) ?? await cloud.embedDocument(bookmark)
+                // `await` can't sit on the right of `??` (autoclosure); expand it.
+                if let v = await onDevice.embedDocument(bookmark) { return v }
+                return await cloud.embedDocument(bookmark)
             }
             return await cloud.embedDocument(bookmark)
         }
@@ -381,7 +383,9 @@ struct EmbeddingProviderSelector: EmbeddingProvider {
             return await cloud.embedQuery(query)
         case .auto:
             if onDevice.isOnDevice() {
-                return await onDevice.embedQuery(query) ?? await cloud.embedQuery(query)
+                // `await` can't sit on the right of `??` (autoclosure); expand it.
+                if let v = await onDevice.embedQuery(query) { return v }
+                return await cloud.embedQuery(query)
             }
             return await cloud.embedQuery(query)
         }

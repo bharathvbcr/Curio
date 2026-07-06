@@ -34,6 +34,7 @@ fun appModule(container: AppContainer) = module {
     single { container.chronosFlowBridge }
     single { container.curioActivityController }
     single { container.reminderScheduler }
+    single { container.onDeviceSemanticLayer }
 
     viewModel {
         BookmarkViewModel(
@@ -48,7 +49,8 @@ fun appModule(container: AppContainer) = module {
             get<com.example.data.remote.TokenStore>(),
             get<com.example.interop.ChronosFlowBridge>(),
             get<com.example.notifications.CurioActivityController>(),
-            get<com.example.notifications.ReminderScheduler>()
+            get<com.example.notifications.ReminderScheduler>(),
+            get<com.example.data.semantic.OnDeviceSemanticLayer>()
         )
     }
     viewModel { AuthViewModel(get<LoginUseCase>(), get<AuthRepository>()) }

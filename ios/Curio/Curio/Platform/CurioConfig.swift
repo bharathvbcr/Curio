@@ -88,6 +88,7 @@ enum CurioConfig {
         return value.isEmpty ? defaultXRedirectURI : value
     }
 
+
     /// The URL scheme component of `xRedirectURI` (e.g. `curio-oauth`), used as the
     /// `callbackURLScheme` for `ASWebAuthenticationSession`. Falls back to the default scheme if
     /// the configured URI has no scheme.

@@ -351,7 +351,15 @@ class ExampleRobolectricTest {
             com.example.notifications.CurioNotifier(ApplicationProvider.getApplicationContext())
         )
         val reminderScheduler = com.example.notifications.ReminderScheduler(ApplicationProvider.getApplicationContext())
-        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager, tokenStore, chronosFlowBridge, curioActivityController, reminderScheduler)
+        val semanticDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            ApplicationProvider.getApplicationContext(),
+            com.example.data.local.AppDatabase::class.java
+        ).allowMainThreadQueries().build()
+        val semanticLayer = com.example.data.semantic.OnDeviceSemanticLayer(
+            ApplicationProvider.getApplicationContext(),
+            semanticDb.semanticCacheDao()
+        )
+        val viewModel = BookmarkViewModel(repository, ocrAnalyzer, aiAnalyzer, embeddingService, sourceResolver, textGenerator, grokImageService, embeddingModelManager, tokenStore, chronosFlowBridge, curioActivityController, reminderScheduler, semanticLayer)
 
         val mockBookmarks = listOf(
             Bookmark(

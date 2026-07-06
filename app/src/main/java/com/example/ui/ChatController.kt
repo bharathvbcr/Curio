@@ -1,10 +1,12 @@
 package com.example.ui
 
+import android.util.Log
 import com.example.data.XAiAnalyzer
 import com.example.data.ai.ChatPromptBuilder
 import com.example.data.embedding.EmbeddingProvider
 import com.example.data.embedding.VectorSearch
 import com.example.data.embedding.VectorSearch.toFloatArray
+import com.example.data.semantic.OnDeviceSemanticLayer
 import com.example.domain.model.Bookmark
 import com.example.domain.model.SourceType
 import com.example.domain.repo.BookmarkRepository
@@ -21,6 +23,11 @@ import kotlinx.coroutines.launch
  * chat state is independent of the feed's filtering flows, so the extraction doesn't touch the
  * central reactive `combine` graph.
  *
+ * The [semanticLayer] is a fully on-device accelerator: it can serve a cached answer for a
+ * semantically-equivalent past query (skipping xAI), compress retrieved RAG context, and route
+ * reasoning effort by query complexity. It is single-user and local, so there is no cross-user
+ * exposure. Caching is skipped whenever Live Search is on, since those answers are time-sensitive.
+ *
  * [rawBookmarks] / [currentUserId] are suppliers reading the VM's live state, so the controller
  * stays a thin collaborator rather than duplicating ownership of the library.
  */
@@ -29,6 +36,7 @@ internal class ChatController(
     private val aiAnalyzer: XAiAnalyzer,
     private val embeddingService: EmbeddingProvider,
     private val repository: BookmarkRepository,
+    private val semanticLayer: OnDeviceSemanticLayer,
     private val rawBookmarks: () -> List<Bookmark>,
     private val currentUserId: () -> String?
 ) {
@@ -66,14 +74,52 @@ internal class ChatController(
             try {
                 val uid = currentUserId()
                 val useLibrary = ChatSource.LIBRARY in sources
-                val contextItems = if (useLibrary) {
-                    if (uid != null) retrieveRagContext(textInput, uid) else rawBookmarks().take(15)
-                } else emptyList()
-
-                // Prompt + system-instruction + Live Search params are built in the data layer
-                // (ChatPromptBuilder). ChatSource is a UI concept; map it to data-layer primitives.
+                // ChatSource is a UI concept; map it to data-layer primitives for the prompt builder.
                 val liveApiTypes = sources.mapNotNull { it.apiType }
                 val liveLabels = sources.filter { it != ChatSource.LIBRARY }.joinToString("/") { it.label }
+
+                val semanticEnabled = semanticLayer.isEnabled()
+                // Only cache answers that don't depend on Live Search (those are time-sensitive).
+                val cacheable = semanticEnabled && liveApiTypes.isEmpty()
+
+                // Embed the query once and reuse the vector for retrieval, cache, and compression.
+                val needEmbedding = semanticEnabled || (useLibrary && uid != null)
+                val queryEmbedding = if (needEmbedding) embeddingService.embedQuery(textInput) else null
+
+                val scored: List<Pair<Bookmark, FloatArray>> = if (useLibrary) {
+                    if (uid != null) retrieveRagContextScored(queryEmbedding, uid)
+                    else rawBookmarks().take(15).map { it to FloatArray(0) }
+                } else emptyList()
+
+                // 1. Semantic cache lookup — serve a past answer and skip xAI entirely.
+                if (cacheable) {
+                    val cached = semanticLayer.lookup(textInput, queryEmbedding, uid)
+                    if (cached != null && cached.response.isNotBlank()) {
+                        Log.d("SemanticLayer", "cache hit tier=${cached.modelTier} sim=${cached.similarity}")
+                        val libraryCitations = if (useLibrary) scored.mapNotNull { citationUrl(it.first) } else emptyList()
+                        _chatMessages.value = _chatMessages.value + ChatMessage(
+                            id = java.util.UUID.randomUUID().toString(),
+                            sender = ChatSender.AI,
+                            text = cached.response,
+                            citations = libraryCitations,
+                            groundedIn = sources.toList(),
+                            semanticCacheEntryId = cached.entryId,
+                            semanticSimilarity = cached.similarity.takeIf { it > 0f },
+                            semanticCacheHit = true,
+                            semanticModelTier = cached.modelTier
+                        )
+                        return@launch
+                    }
+                }
+
+                // 2. Compress retrieved context (MMR) before building the prompt.
+                val contextItems = if (semanticEnabled) semanticLayer.compress(queryEmbedding, scored)
+                else scored.map { it.first }
+                val libraryCitations = if (useLibrary) contextItems.mapNotNull { citationUrl(it) } else emptyList()
+
+                // 3. Route reasoning effort by query complexity.
+                val route = if (semanticEnabled) semanticLayer.route(textInput) else null
+
                 val parts = ChatPromptBuilder.build(
                     userQuery = textInput,
                     contextItems = contextItems,
@@ -82,15 +128,28 @@ internal class ChatController(
                     liveLabels = liveLabels
                 )
 
-                val aiResponse = aiAnalyzer.generateChatResponse(parts.contextPrompt, parts.systemInstruction, parts.searchParameters)
+                val aiResponse = aiAnalyzer.generateChatResponse(
+                    prompt = parts.contextPrompt,
+                    systemInstruction = parts.systemInstruction,
+                    searchParameters = parts.searchParameters,
+                    reasoningEffort = route?.reasoningEffort
+                )
+
+                // 4. Write-through store (cacheable answers only).
+                val cacheEntryId = if (cacheable) {
+                    semanticLayer.store(textInput, queryEmbedding, aiResponse.text, uid, route?.tier ?: "")
+                } else null
+
                 // Surface retrieved library items as citations too (Live Search citations only cover web/x/news).
-                val libraryCitations = if (useLibrary) contextItems.mapNotNull { citationUrl(it) } else emptyList()
                 _chatMessages.value = _chatMessages.value + ChatMessage(
                     id = java.util.UUID.randomUUID().toString(),
                     sender = ChatSender.AI,
                     text = aiResponse.text,
                     citations = (aiResponse.citations + libraryCitations).distinct(),
-                    groundedIn = sources.toList()
+                    groundedIn = sources.toList(),
+                    semanticCacheEntryId = cacheEntryId,
+                    semanticCacheHit = false,
+                    semanticModelTier = route?.tier
                 )
             } catch (e: Exception) {
                 _chatMessages.value = _chatMessages.value + ChatMessage(
@@ -117,6 +176,22 @@ internal class ChatController(
         send(prompt, includeUserMessage = false)
     }
 
+    /**
+     * Thumbs up/down on a cache-served assistant message. Thumbs-down evicts the offending cache
+     * entry and nudges the hit threshold up so the bad match isn't repeated (handled on-device).
+     */
+    fun submitSemanticFeedback(messageId: String, accepted: Boolean) {
+        scope.launch {
+            val msg = _chatMessages.value.find { it.id == messageId } ?: return@launch
+            val entryId = msg.semanticCacheEntryId ?: return@launch
+            if (msg.semanticFeedbackAccepted != null) return@launch
+            semanticLayer.feedback(entryId, accepted, msg.semanticSimilarity ?: 0f)
+            _chatMessages.value = _chatMessages.value.map {
+                if (it.id == messageId) it.copy(semanticFeedbackAccepted = accepted) else it
+            }
+        }
+    }
+
     /** Canonical URL for a retrieved library item, used to cite library-grounded chat replies. */
     private fun citationUrl(b: Bookmark): String? = when (b.sourceType) {
         SourceType.ARXIV -> "https://arxiv.org/abs/${b.sourceId}"
@@ -126,17 +201,28 @@ internal class ChatController(
         else -> b.url
     }
 
-    private suspend fun retrieveRagContext(query: String, userId: String): List<Bookmark> {
+    /**
+     * Retrieves the top-K library bookmarks for [queryEmbedding], paired with their embeddings so
+     * the semantic compressor can MMR-rank them. Falls back to recent bookmarks (no embeddings)
+     * when the query can't be embedded or nothing is indexed yet.
+     */
+    private suspend fun retrieveRagContextScored(
+        queryEmbedding: FloatArray?,
+        userId: String
+    ): List<Pair<Bookmark, FloatArray>> {
         return try {
-            val queryEmbedding = embeddingService.embedQuery(query) ?: return rawBookmarks().take(15)
-            val allEmbeddings = repository.getBookmarksWithEmbeddings(userId)
+            if (queryEmbedding == null) return rawBookmarks().take(15).map { it to FloatArray(0) }
+            val all = repository.getBookmarksWithEmbeddings(userId)
                 .map { (id, bytes) -> id to bytes.toFloatArray() }
-            if (allEmbeddings.isEmpty()) return rawBookmarks().take(15)
-            val topIds = VectorSearch.topK(queryEmbedding, allEmbeddings, k = 15).toSet()
+            if (all.isEmpty()) return rawBookmarks().take(15).map { it to FloatArray(0) }
+            val embById = all.toMap()
+            val topScored = VectorSearch.topKScored(queryEmbedding, all, k = 15)
             val bookmarkMap = rawBookmarks().associateBy { it.id }
-            topIds.mapNotNull { bookmarkMap[it] }
+            topScored.mapNotNull { (id, _) ->
+                bookmarkMap[id]?.let { it to (embById[id] ?: FloatArray(0)) }
+            }
         } catch (e: Exception) {
-            rawBookmarks().take(15)
+            rawBookmarks().take(15).map { it to FloatArray(0) }
         }
     }
 }

@@ -339,7 +339,8 @@ class XAiAnalyzer(
     suspend fun generateChatResponse(
         prompt: String,
         systemInstruction: String = "You are a helpful AI assistant. Always respond in English.",
-        searchParameters: XAiSearchParameters? = null
+        searchParameters: XAiSearchParameters? = null,
+        reasoningEffort: String? = null
     ): ChatResponse = withContext(Dispatchers.IO) {
         val apiKey = XaiKeyStore.resolve()
         if (!XaiKeyStore.isConfigured()) {
@@ -352,6 +353,7 @@ class XAiAnalyzer(
                 XAiMessage(role = "user", content = prompt)
             ),
             temperature = 0.7f,
+            reasoningEffort = reasoningEffort,
             searchParameters = searchParameters
         )
         try {

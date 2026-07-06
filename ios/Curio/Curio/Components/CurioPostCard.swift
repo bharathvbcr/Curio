@@ -1015,14 +1015,14 @@ private struct CardOptionsSheet: View {
                     onFavorite: { actions.onToggleFavorite() },
                     onReadLater: { actions.onToggleSavedForLater() },
                     onChangeSpace: { act(onMoveToSpace) },
-                    onOpenLink: (bookmark.url?.nonEmptyBlank).map { url in
+                    onOpenLink: bookmark.url.flatMap { $0.nonEmptyBlank ? $0 : nil }.map { url in
                         { act { openUrlWithFeedback(url) } }
                     }
                 )
 
                 if !curateActions.isEmpty {
                     SheetDivider().padding(.vertical, 8)
-                    SheetSectionLabel("CURATE")
+                    SheetSectionLabel(text: "CURATE")
                     if isProcessing {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small).tint(colors.primary)
@@ -1040,7 +1040,7 @@ private struct CardOptionsSheet: View {
 
                 if !moreActions.isEmpty {
                     SheetDivider().padding(.vertical, 8)
-                    SheetSectionLabel("MORE")
+                    SheetSectionLabel(text: "MORE")
                     ForEach(moreActions) { action in
                         SheetListRow(action: action) { act(action.onClick) }
                     }
@@ -1399,6 +1399,7 @@ private struct SheetFooterRow: View {
 
 // MARK: - URL open feedback
 
+@MainActor
 private func openUrlWithFeedback(_ rawUrl: String?) {
     switch CurioFormat.openUrl(rawUrl) {
     case .opened: break

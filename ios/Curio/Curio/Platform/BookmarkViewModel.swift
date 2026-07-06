@@ -141,6 +141,7 @@ final class BookmarkViewModel {
     @ObservationIgnored private let chronosFlowBridge: ChronosFlowBridge
     @ObservationIgnored private let liveActivityManager: LiveActivityManager
     @ObservationIgnored private let reminderScheduler: ReminderScheduler
+    @ObservationIgnored private let semanticLayer: OnDeviceSemanticLayer
     /// Synchronous resolver for the runtime xAI key. The Kotlin VM called `XaiKeyStore.isConfigured()`
     /// on the global `object`; here it is a trivial `struct` wrapping the same process-global slot.
     @ObservationIgnored private let xaiKeyStore = XaiKeyStore()
@@ -161,6 +162,14 @@ final class BookmarkViewModel {
     /// @Observable`, so reading its `state` through this computed property keeps the Settings card
     /// reactive without duplicating the value. Port of `val embeddingModelState = …state`.
     var embeddingModelState: EmbeddingModelManager.ModelState { embeddingModelManager.state }
+
+    /// Whether the on-device semantic layer (cache + compression + routing) is enabled.
+    private(set) var semanticLayerEnabled: Bool = SemanticPreference.isEnabled()
+
+    func setSemanticLayerEnabled(_ enabled: Bool) {
+        semanticLayer.setEnabled(enabled)
+        semanticLayerEnabled = enabled
+    }
 
     // MARK: - Identity
 
@@ -209,6 +218,7 @@ final class BookmarkViewModel {
         aiAnalyzer: aiAnalyzer,
         embeddingService: embeddingService,
         repository: repository,
+        semanticLayer: semanticLayer,
         rawBookmarks: { [weak self] in self?.rawBookmarks ?? [] },
         currentUserId: { [weak self] in self?.userId }
     )
@@ -295,6 +305,9 @@ final class BookmarkViewModel {
     func clearChat() { chatController.clear() }
     func sendChatMessage(_ textInput: String) { chatController.send(textInput) }
     func retryChatMessage(_ failedMessageId: String) { chatController.retryMessage(failedMessageId) }
+    func submitSemanticFeedback(messageId: String, accepted: Bool) {
+        chatController.submitSemanticFeedback(messageId: messageId, accepted: accepted)
+    }
 
     // MARK: - Digest facades
 
@@ -338,7 +351,8 @@ final class BookmarkViewModel {
         tokenStore: TokenStore,
         chronosFlowBridge: ChronosFlowBridge,
         liveActivityManager: LiveActivityManager,
-        reminderScheduler: ReminderScheduler
+        reminderScheduler: ReminderScheduler,
+        semanticLayer: OnDeviceSemanticLayer
     ) {
         self.repository = repository
         self.ocrAnalyzer = ocrAnalyzer
@@ -352,6 +366,7 @@ final class BookmarkViewModel {
         self.chronosFlowBridge = chronosFlowBridge
         self.liveActivityManager = liveActivityManager
         self.reminderScheduler = reminderScheduler
+        self.semanticLayer = semanticLayer
 
         // `searchController` / `digestController` / `chatController` are `lazy` (they capture `self`
         // through main-actor suppliers and so can only be built post-init). `curationController` takes

@@ -131,11 +131,21 @@ class BookmarkViewModel(
     private val tokenStore: com.example.data.remote.TokenStore,
     private val chronosFlowBridge: com.example.interop.ChronosFlowBridge,
     private val curioActivityController: com.example.notifications.CurioActivityController,
-    private val reminderScheduler: com.example.notifications.ReminderScheduler
+    private val reminderScheduler: com.example.notifications.ReminderScheduler,
+    private val semanticLayer: com.example.data.semantic.OnDeviceSemanticLayer
 ) : ViewModel() {
 
     /** Download state of the on-device EmbeddingGemma model (for the Settings card). */
     val embeddingModelState = embeddingModelManager.state
+
+    /** Whether the on-device semantic layer (cache + compression + routing) is enabled. */
+    private val _semanticLayerEnabled = MutableStateFlow(semanticLayer.isEnabled())
+    val semanticLayerEnabled: StateFlow<Boolean> = _semanticLayerEnabled.asStateFlow()
+
+    fun setSemanticLayerEnabled(enabled: Boolean) {
+        semanticLayer.setEnabled(enabled)
+        _semanticLayerEnabled.value = enabled
+    }
 
     /**
      * Downloads the on-device EmbeddingGemma weights + tokenizer. An optional Hugging Face [token]
@@ -1284,6 +1294,7 @@ class BookmarkViewModel(
         aiAnalyzer = aiAnalyzer,
         embeddingService = embeddingService,
         repository = repository,
+        semanticLayer = semanticLayer,
         rawBookmarks = { rawBookmarks.value },
         currentUserId = { _userId.value }
     )
@@ -1295,6 +1306,8 @@ class BookmarkViewModel(
     fun clearChat() = chatController.clear()
     fun sendChatMessage(textInput: String) = chatController.send(textInput)
     fun retryChatMessage(failedMessageId: String) = chatController.retryMessage(failedMessageId)
+    fun submitSemanticFeedback(messageId: String, accepted: Boolean) =
+        chatController.submitSemanticFeedback(messageId, accepted)
 
     fun addManualBookmark(text: String, onResult: (Result<Bookmark>) -> Unit = {}) {
         val uid = _userId.value ?: return
@@ -1370,8 +1383,21 @@ data class ChatMessage(
     /** True when the AI turn failed — renders as an error bubble with retry. */
     val isError: Boolean = false,
     /** Original user prompt to re-send on retry (only set for error bubbles). */
-    val retryPrompt: String? = null
-)
+    val retryPrompt: String? = null,
+    /** Semantic sidecar cache entry id (enables thumbs up/down feedback). */
+    val semanticCacheEntryId: String? = null,
+    /** Cache lookup similarity when the sidecar served this reply. */
+    val semanticSimilarity: Float? = null,
+    /** True when the sidecar returned a cache hit for this reply. */
+    val semanticCacheHit: Boolean = false,
+    /** Sidecar model tier (`cached`, `fast`, `standard`, …). */
+    val semanticModelTier: String? = null,
+    /** User feedback on sidecar quality; null = not yet submitted. */
+    val semanticFeedbackAccepted: Boolean? = null
+) {
+    val showsSemanticFeedback: Boolean
+        get() = semanticCacheEntryId != null && semanticFeedbackAccepted == null
+}
 
 enum class ChatSender { USER, AI }
 

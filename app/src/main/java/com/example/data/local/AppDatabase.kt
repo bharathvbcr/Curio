@@ -8,10 +8,15 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.BuildConfig
 
-@Database(entities = [BookmarkEntity::class, SpaceEntity::class], version = 11, exportSchema = true)
+@Database(
+    entities = [BookmarkEntity::class, SpaceEntity::class, SemanticCacheEntity::class],
+    version = 12,
+    exportSchema = true
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun spaceDao(): SpaceDao
+    abstract fun semanticCacheDao(): SemanticCacheDao
 
     companion object {
         @Volatile
@@ -85,6 +90,36 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v11 → v12: adds the on-device semantic response cache (`semantic_cache`). Column and
+         * index definitions mirror Room's generated schema for [SemanticCacheEntity] exactly so
+         * the post-migration schema hash validates. Pure additive change — no existing data touched.
+         */
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS semantic_cache (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        userId TEXT NOT NULL,
+                        queryText TEXT NOT NULL,
+                        queryHash TEXT NOT NULL,
+                        embedding BLOB,
+                        response TEXT NOT NULL,
+                        modelTier TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        lastAccessAt INTEGER NOT NULL,
+                        expiresAt INTEGER NOT NULL,
+                        hitCount INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_semantic_cache_userId_queryHash ON semantic_cache (userId, queryHash)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_semantic_cache_userId ON semantic_cache (userId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_semantic_cache_expiresAt ON semantic_cache (expiresAt)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -92,7 +127,10 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "curio_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                    .addMigrations(
+                        MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
+                        MIGRATION_10_11, MIGRATION_11_12
+                    )
                     .apply {
                         // Destructive fallback wipes the user's entire library on any schema
                         // mismatch. Keep it for fast iteration in debug builds only; a release

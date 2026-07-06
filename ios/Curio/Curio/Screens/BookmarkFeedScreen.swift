@@ -45,7 +45,7 @@ struct BookmarkFeedView: View {
     let onBookmarkClick: (Bookmark) -> Void
     var onOpenMenu: () -> Void = {}
     /// Opens the Settings screen (the BYOK setup banner's tap target). Port of `onNavigateToSettings`.
-    var onNavigateToSettings: () -> Unit = {}
+    var onNavigateToSettings: () -> Void = {}
     var loginSuccessMessage: String? = nil
     var onDismissLoginSuccess: () -> Void = {}
 
@@ -655,7 +655,9 @@ struct BookmarkFeedView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .glassSurface(tier: tier, tint: colors.primaryContainer.opacity(0.25))
             .task(id: loginSuccessMessage) {
-                guard let msg = loginSuccessMessage, !msg.isEmpty else { return }
+                // `loginSuccessMessage` is already the non-optional, non-empty value unwrapped by the
+                // enclosing `if let` shorthand at the top of this banner.
+                let msg = loginSuccessMessage
                 try? await Task.sleep(for: .seconds(5))
                 if loginSuccessMessage == msg {
                     onDismissLoginSuccess()

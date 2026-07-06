@@ -162,6 +162,14 @@ class AppContainer(private val context: Context) {
         )
     }
 
+    /** On-device semantic layer: response cache + RAG compression + complexity routing. */
+    val onDeviceSemanticLayer: com.example.data.semantic.OnDeviceSemanticLayer by lazy {
+        com.example.data.semantic.OnDeviceSemanticLayer(
+            context.applicationContext,
+            database.semanticCacheDao()
+        )
+    }
+
     val arxivClient: ArxivClient by lazy { ArxivClient(metadataClient) }
 
     val crossrefClient: com.example.data.remote.CrossrefClient by lazy {

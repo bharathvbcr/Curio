@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// Owns the Research Assistant chat: message list, loading state, selected grounding sources, and the
 /// RAG retrieval + Live Search send path. Ported 1:1 from `ui/ChatController.kt`.
@@ -19,6 +20,7 @@ final class ChatController {
     @ObservationIgnored private let aiAnalyzer: XAiAnalyzer
     @ObservationIgnored private let embeddingService: EmbeddingProvider
     @ObservationIgnored private let repository: BookmarkRepository
+    @ObservationIgnored private let semanticLayer: OnDeviceSemanticLayer
     @ObservationIgnored private let rawBookmarks: @MainActor () -> [Bookmark]
     @ObservationIgnored private let currentUserId: @MainActor () -> String?
 
@@ -35,16 +37,20 @@ final class ChatController {
 
     @ObservationIgnored private var sendTask: Task<Void, Never>?
 
+    private static let logger = Logger(subsystem: "com.curio.app", category: "ChatController")
+
     init(
         aiAnalyzer: XAiAnalyzer,
         embeddingService: EmbeddingProvider,
         repository: BookmarkRepository,
+        semanticLayer: OnDeviceSemanticLayer,
         rawBookmarks: @escaping @MainActor () -> [Bookmark],
         currentUserId: @escaping @MainActor () -> String?
     ) {
         self.aiAnalyzer = aiAnalyzer
         self.embeddingService = embeddingService
         self.repository = repository
+        self.semanticLayer = semanticLayer
         self.rawBookmarks = rawBookmarks
         self.currentUserId = currentUserId
     }
@@ -88,16 +94,6 @@ final class ChatController {
             do {
                 let uid = self.currentUserId()
                 let useLibrary = sources.contains(.library)
-                let contextItems: [Bookmark]
-                if useLibrary {
-                    if let uid {
-                        contextItems = await self.retrieveRagContext(query: textInput, userId: uid)
-                    } else {
-                        contextItems = Array(self.rawBookmarks().prefix(15))
-                    }
-                } else {
-                    contextItems = []
-                }
 
                 // Prompt + system-instruction + Live Search params are built in the data layer
                 // (ChatPromptBuilder). ChatSource is a UI concept; map it to data-layer primitives.
@@ -106,6 +102,57 @@ final class ChatController {
                     .filter { $0 != .library }
                     .map { $0.label }
                     .joined(separator: "/")
+
+                let semanticEnabled = self.semanticLayer.isEnabled()
+                // Only cache answers that don't depend on Live Search (those are time-sensitive).
+                let cacheable = semanticEnabled && liveApiTypes.isEmpty
+
+                // Embed the query once and reuse the vector for retrieval, cache, and compression.
+                let needEmbedding = semanticEnabled || (useLibrary && uid != nil)
+                let queryEmbedding = needEmbedding ? await self.embeddingService.embedQuery(textInput) : nil
+
+                let scored: [(bookmark: Bookmark, embedding: [Float])]
+                if useLibrary {
+                    if let uid {
+                        scored = await self.retrieveRagContextScored(queryEmbedding: queryEmbedding, userId: uid)
+                    } else {
+                        scored = Array(self.rawBookmarks().prefix(15)).map { ($0, []) }
+                    }
+                } else {
+                    scored = []
+                }
+
+                // 1. Semantic cache lookup — serve a past answer and skip xAI entirely.
+                if cacheable, let cached = await self.semanticLayer.lookup(query: textInput, queryEmbedding: queryEmbedding, userId: uid),
+                   !cached.response.isEmpty {
+                    Self.logger.debug("cache hit tier=\(cached.modelTier, privacy: .public)")
+                    let libraryCitations = useLibrary ? scored.compactMap { self.citationUrl($0.bookmark) } : []
+                    self.chatMessages.append(
+                        ChatMessage(
+                            id: UUID().uuidString,
+                            sender: .ai,
+                            text: cached.response,
+                            citations: libraryCitations,
+                            groundedIn: sources.elements,
+                            semanticCacheEntryId: cached.entryId,
+                            semanticSimilarity: cached.similarity > 0 ? cached.similarity : nil,
+                            semanticCacheHit: true,
+                            semanticModelTier: cached.modelTier
+                        )
+                    )
+                    self.isChatLoading = false
+                    return
+                }
+
+                // 2. Compress retrieved context (MMR) before building the prompt.
+                let contextItems = semanticEnabled
+                    ? self.semanticLayer.compress(queryEmbedding: queryEmbedding, scored: scored)
+                    : scored.map { $0.bookmark }
+                let libraryCitations = useLibrary ? contextItems.compactMap { self.citationUrl($0) } : []
+
+                // 3. Route reasoning effort by query complexity.
+                let route = semanticEnabled ? self.semanticLayer.route(textInput) : nil
+
                 let parts = ChatPromptBuilder.build(
                     userQuery: textInput,
                     contextItems: contextItems,
@@ -117,11 +164,17 @@ final class ChatController {
                 let aiResponse = await self.aiAnalyzer.generateChatResponse(
                     contextPrompt: parts.contextPrompt,
                     systemInstruction: parts.systemInstruction,
-                    searchParameters: parts.searchParameters
+                    searchParameters: parts.searchParameters,
+                    reasoningEffort: route?.reasoningEffort
                 )
+
+                // 4. Write-through store (cacheable answers only).
+                let cacheEntryId: String? = cacheable
+                    ? await self.semanticLayer.store(query: textInput, queryEmbedding: queryEmbedding, response: aiResponse.text, userId: uid, modelTier: route?.tier ?? "")
+                    : nil
+
                 // Surface retrieved library items as citations too (Live Search citations only cover
                 // web/x/news).
-                let libraryCitations = useLibrary ? contextItems.compactMap { self.citationUrl($0) } : []
                 let mergedCitations = (aiResponse.citations + libraryCitations).distinctPreservingOrder()
                 self.chatMessages.append(
                     ChatMessage(
@@ -129,7 +182,10 @@ final class ChatController {
                         sender: .ai,
                         text: aiResponse.text,
                         citations: mergedCitations,
-                        groundedIn: sources.elements
+                        groundedIn: sources.elements,
+                        semanticCacheEntryId: cacheEntryId,
+                        semanticCacheHit: false,
+                        semanticModelTier: route?.tier
                     )
                 )
             } catch {
@@ -155,6 +211,37 @@ final class ChatController {
         send(prompt, includeUserMessage: false)
     }
 
+    func submitSemanticFeedback(messageId: String, accepted: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let msg = self.chatMessages.first(where: { $0.id == messageId }) else { return }
+            guard let entryId = msg.semanticCacheEntryId, msg.semanticFeedbackAccepted == nil else { return }
+            // Thumbs-down evicts the offending cache entry and nudges the hit threshold up (on-device).
+            await self.semanticLayer.feedback(
+                entryId: entryId,
+                accepted: accepted,
+                similarity: msg.semanticSimilarity ?? 0
+            )
+            // Re-find in case the list changed during the await.
+            guard let index = self.chatMessages.firstIndex(where: { $0.id == messageId }) else { return }
+            let current = self.chatMessages[index]
+            self.chatMessages[index] = ChatMessage(
+                id: current.id,
+                sender: current.sender,
+                text: current.text,
+                citations: current.citations,
+                groundedIn: current.groundedIn,
+                isError: current.isError,
+                retryPrompt: current.retryPrompt,
+                semanticCacheEntryId: current.semanticCacheEntryId,
+                semanticSimilarity: current.semanticSimilarity,
+                semanticCacheHit: current.semanticCacheHit,
+                semanticModelTier: current.semanticModelTier,
+                semanticFeedbackAccepted: accepted
+            )
+        }
+    }
+
     /// Canonical URL for a retrieved library item, used to cite library-grounded chat replies. Port of
     /// `citationUrl(b)` — the exact source-type URL templates.
     private func citationUrl(_ b: Bookmark) -> String? {
@@ -171,23 +258,28 @@ final class ChatController {
     /// `"null"` when nil) inside the citation templates.
     private func stringifyId(_ value: String?) -> String { value ?? "null" }
 
-    /// Semantically retrieves the top-k library context for a RAG-grounded reply, falling back to the
-    /// 15 most-recent bookmarks whenever embeddings are unavailable / the query can't be embedded.
-    /// Port of `retrieveRagContext` (k=15; every failure → `rawBookmarks().take(15)`).
-    private func retrieveRagContext(query: String, userId: String) async -> [Bookmark] {
-        guard let queryEmbedding = await embeddingService.embedQuery(query) else {
-            return Array(rawBookmarks().prefix(15))
+    /// Semantically retrieves the top-k library context for `queryEmbedding`, paired with each
+    /// bookmark's embedding so the semantic compressor can MMR-rank them. Falls back to the 15
+    /// most-recent bookmarks (no embeddings) whenever the query can't be embedded / nothing is
+    /// indexed yet. Reuses the already-computed `queryEmbedding` (embed-once).
+    private func retrieveRagContextScored(
+        queryEmbedding: [Float]?,
+        userId: String
+    ) async -> [(bookmark: Bookmark, embedding: [Float])] {
+        guard let queryEmbedding else {
+            return Array(rawBookmarks().prefix(15)).map { ($0, []) }
         }
         let stored = await repository.getBookmarksWithEmbeddings(userId: userId)
         let allEmbeddings: [(String, [Float])] = stored.map { (id, bytes) in
             (id, VectorSearch.dataToFloatArray(bytes))
         }
-        if allEmbeddings.isEmpty { return Array(rawBookmarks().prefix(15)) }
-        let topIds = Set(VectorSearch.topK(query: queryEmbedding, candidates: allEmbeddings, k: 15))
-        // Kotlin `associateBy { it.id }` keeps the LAST value on key collision (ids are unique here, so
-        // this is academic — preserved for fidelity).
+        if allEmbeddings.isEmpty { return Array(rawBookmarks().prefix(15)).map { ($0, []) } }
+        let embById = Dictionary(allEmbeddings, uniquingKeysWith: { _, last in last })
+        let topScored = VectorSearch.topKScored(query: queryEmbedding, candidates: allEmbeddings, k: 15)
         let bookmarkMap = Dictionary(rawBookmarks().map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        return topIds.compactMap { bookmarkMap[$0] }
+        return topScored.compactMap { pair in
+            bookmarkMap[pair.0].map { ($0, embById[pair.0] ?? []) }
+        }
     }
 }
 
@@ -246,6 +338,11 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
     let groundedIn: [ChatSource]
     let isError: Bool
     let retryPrompt: String?
+    let semanticCacheEntryId: String?
+    let semanticSimilarity: Float?
+    let semanticCacheHit: Bool
+    let semanticModelTier: String?
+    let semanticFeedbackAccepted: Bool?
 
     init(
         id: String,
@@ -254,7 +351,12 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
         citations: [String] = [],
         groundedIn: [ChatSource] = [],
         isError: Bool = false,
-        retryPrompt: String? = nil
+        retryPrompt: String? = nil,
+        semanticCacheEntryId: String? = nil,
+        semanticSimilarity: Float? = nil,
+        semanticCacheHit: Bool = false,
+        semanticModelTier: String? = nil,
+        semanticFeedbackAccepted: Bool? = nil
     ) {
         self.id = id
         self.sender = sender
@@ -263,6 +365,15 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
         self.groundedIn = groundedIn
         self.isError = isError
         self.retryPrompt = retryPrompt
+        self.semanticCacheEntryId = semanticCacheEntryId
+        self.semanticSimilarity = semanticSimilarity
+        self.semanticCacheHit = semanticCacheHit
+        self.semanticModelTier = semanticModelTier
+        self.semanticFeedbackAccepted = semanticFeedbackAccepted
+    }
+
+    var showsSemanticFeedback: Bool {
+        semanticCacheEntryId != nil && semanticFeedbackAccepted == nil
     }
 }
 
@@ -284,7 +395,11 @@ struct OrderedChatSourceSet: Sendable, Equatable {
 
     var isEmpty: Bool { elements.isEmpty }
 
+    var count: Int { elements.count }
+
     func contains(_ source: ChatSource) -> Bool { elements.contains(source) }
+
+    func contains(where predicate: (ChatSource) -> Bool) -> Bool { elements.contains(where: predicate) }
 
     mutating func insert(_ source: ChatSource) {
         if !elements.contains(source) { elements.append(source) }

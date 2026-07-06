@@ -19,10 +19,12 @@ final class EmbeddingService: EmbeddingProvider {
     private static let logger = Logger(subsystem: "com.curio.app", category: "EmbeddingService")
 
     /// Human-readable reason the last embed attempt failed, for the UI to surface. Nil on success.
-    private(set) var lastError: String?
+    /// `nonisolated(unsafe)` (as with `entityStripRegex` above): this cloud path is best-effort and
+    /// mirrors the Kotlin plain-class field; not worth an actor hop for a usually-nil fallback.
+    private(set) nonisolated(unsafe) var lastError: String?
 
     /// Cache the discovered model id for the process lifetime.
-    private var cachedModelId: String?
+    private nonisolated(unsafe) var cachedModelId: String?
 
     init(xAiApi: XAiApi, keyStore: XaiKeyStore = XaiKeyStore()) {
         self.xAiApi = xAiApi

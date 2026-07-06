@@ -164,6 +164,8 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.outlined.ThumbDown
+import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -351,6 +353,26 @@ internal fun CurioChatScreen(
                                         }
                                     }
                                 }
+                                if (isAi && !isError && msg.semanticCacheHit) {
+                                    Text(
+                                        "Cached",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                                        modifier = Modifier.testTag("chat_cached_badge_${msg.id}")
+                                    )
+                                }
+                                if (isAi && !isError && msg.showsSemanticFeedback) {
+                                    SemanticFeedbackRow(
+                                        messageId = msg.id,
+                                        onFeedback = { accepted -> viewModel.submitSemanticFeedback(msg.id, accepted) }
+                                    )
+                                } else if (isAi && !isError && msg.semanticFeedbackAccepted != null) {
+                                    Text(
+                                        if (msg.semanticFeedbackAccepted) "Thanks for the feedback" else "Feedback noted",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                    )
+                                }
                                 if (isAi && !isError && msg.citations.isNotEmpty()) {
                                     CitationStrip(msg.citations, context)
                                 }
@@ -469,6 +491,42 @@ private fun ChatBubble(
             color = MaterialTheme.colorScheme.onSurface,
             accent = MaterialTheme.colorScheme.primary
         )
+    }
+}
+
+/** Thumbs up/down for sidecar-served assistant replies. */
+@Composable
+private fun SemanticFeedbackRow(
+    messageId: String,
+    onFeedback: (Boolean) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(
+            onClick = { onFeedback(true) },
+            modifier = Modifier
+                .size(36.dp)
+                .testTag("chat_feedback_up_$messageId")
+        ) {
+            Icon(
+                Icons.Outlined.ThumbUp,
+                contentDescription = "Helpful response",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        IconButton(
+            onClick = { onFeedback(false) },
+            modifier = Modifier
+                .size(36.dp)
+                .testTag("chat_feedback_down_$messageId")
+        ) {
+            Icon(
+                Icons.Outlined.ThumbDown,
+                contentDescription = "Unhelpful response",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                modifier = Modifier.size(16.dp)
+            )
+        }
     }
 }
 

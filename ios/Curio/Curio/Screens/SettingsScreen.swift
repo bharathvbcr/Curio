@@ -467,6 +467,30 @@ struct SettingsView: View {
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(colors.onSurface)
 
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Semantic acceleration")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(colors.onSurface)
+                        Text(semanticAccelerationSubtitle)
+                            .font(.system(size: 11, weight: .heavy))
+                            .tracking(1.0)
+                            .foregroundStyle(colors.onSurface.opacity(0.6))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Spacer().frame(width: 12)
+
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.semanticLayerEnabled },
+                        set: { viewModel.setSemanticLayerEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .tint(colors.primary)
+                    .accessibilityIdentifier("semantic_layer_switch")
+                }
+                .frame(maxWidth: .infinity)
+
                 embeddingEngineSection
 
                 divider(opacity: 0.06)
@@ -587,6 +611,12 @@ struct SettingsView: View {
         case .xai:
             return "Generate semantic vectors via xAI cloud."
         }
+    }
+
+    private var semanticAccelerationSubtitle: String {
+        viewModel.semanticLayerEnabled
+            ? "On-device — caches answers, compresses context, and routes reasoning effort by complexity."
+            : "Off — chat calls xAI directly with the full retrieved context."
     }
 
     // MARK: - On-Device Embedding card

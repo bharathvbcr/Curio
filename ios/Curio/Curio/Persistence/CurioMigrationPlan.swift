@@ -26,29 +26,24 @@ import SwiftData
 /// Store file `curio_database` lives in Application Support; DEBUG destructive-rebuild / RELEASE
 /// propagate is handled by `CurioDatabase` (CONVENTIONS §6).
 enum CurioMigrationPlan: SchemaMigrationPlan {
+    // Only genuinely-distinct schema shapes may appear here: SwiftData throws
+    // "Duplicate version checksums across stages detected" if two versioned schemas hash
+    // identically. The historical `SchemaV6…V11` all reference the SAME current model classes
+    // (their Room-era deltas were column/index additions already baked into `BookmarkModel` /
+    // `SpaceModel`), so they share one checksum and cannot be staged. No iOS SwiftData store has
+    // ever shipped, so that fictional history is unnecessary — the only real shape change on iOS
+    // is adding the semantic cache. We therefore stage just V11 → V12.
     static var schemas: [any VersionedSchema.Type] {
         [
-            SchemaV6.self,
-            SchemaV7.self,
-            SchemaV8.self,
-            SchemaV9.self,
-            SchemaV10.self,
-            SchemaV11.self
+            SchemaV11.self,
+            SchemaV12.self
         ]
     }
 
     static var stages: [MigrationStage] {
         [
-            // v6 → v7: + bookmarks.spaceId, + spaces table (+ index_spaces_userId).
-            .lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self),
-            // v7 → v8: + bookmarks.notes.
-            .lightweight(fromVersion: SchemaV7.self, toVersion: SchemaV8.self),
-            // v8 → v9: + spaces.{description, isPinned, sortIndex, rulesJson} with defaults.
-            .lightweight(fromVersion: SchemaV8.self, toVersion: SchemaV9.self),
-            // v9 → v10: + index_bookmarks_spaceId, + index_bookmarks_userId_category.
-            .lightweight(fromVersion: SchemaV9.self, toVersion: SchemaV10.self),
-            // v10 → v11: + index_bookmarks_isAnalyzed, + index_bookmarks_userId_isAnalyzed.
-            .lightweight(fromVersion: SchemaV10.self, toVersion: SchemaV11.self)
+            // v11 → v12: + semantic_cache table (new on-device response cache model).
+            .lightweight(fromVersion: SchemaV11.self, toVersion: SchemaV12.self)
         ]
     }
 }
@@ -92,8 +87,16 @@ enum SchemaV10: VersionedSchema {
     static var models: [any PersistentModel.Type] { [BookmarkModel.self, SpaceModel.self] }
 }
 
-/// Room v11 (current): embedding-backfill + enrichment indices on `bookmarks`.
+/// Room v11: embedding-backfill + enrichment indices on `bookmarks`.
 enum SchemaV11: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(11, 0, 0) }
     static var models: [any PersistentModel.Type] { [BookmarkModel.self, SpaceModel.self] }
+}
+
+/// Room v12 (current): adds the on-device semantic response cache (`SemanticCacheEntry`).
+enum SchemaV12: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(12, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [BookmarkModel.self, SpaceModel.self, SemanticCacheEntry.self]
+    }
 }

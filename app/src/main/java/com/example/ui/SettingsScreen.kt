@@ -824,11 +824,40 @@ internal fun SettingsScreen(
             var embeddingBackend by remember {
                 mutableStateOf(com.example.data.embedding.EmbeddingPreference.get(context))
             }
+            val semanticLayerEnabled by viewModel.semanticLayerEnabled.collectAsStateWithLifecycle()
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = "Research Intelligence",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Semantic acceleration",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = if (semanticLayerEnabled) {
+                                "On-device — caches answers, compresses retrieved context, and routes reasoning effort by complexity."
+                            } else {
+                                "Off — chat calls xAI directly with the full retrieved context."
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(
+                        checked = semanticLayerEnabled,
+                        onCheckedChange = { viewModel.setSemanticLayerEnabled(it) },
+                        modifier = Modifier.testTag("semantic_layer_switch")
+                    )
+                }
 
                 // Embedding engine chooser. Lets the user force which backend "Embed All" and search
                 // use, so a "0 embedded" result is explainable: On-device requires the EmbeddingGemma

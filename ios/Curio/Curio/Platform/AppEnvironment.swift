@@ -259,6 +259,16 @@ final class AppEnvironment {
     /// Schedules Curio-owned read-later reminders in-house (twin of Android `ReminderScheduler`).
     @ObservationIgnored lazy var reminderScheduler: ReminderScheduler = ReminderScheduler()
 
+    /// Off-main store for the on-device semantic response cache (`@ModelActor`), analogue of
+    /// `database.semanticCacheDao()`.
+    @ObservationIgnored lazy var semanticCacheStore: SemanticCacheStore =
+        SemanticCacheStore(modelContainer: database.container)
+
+    /// On-device semantic layer: response cache + RAG compression + complexity routing. Replaces
+    /// the former Python sidecar client; fully local, single-user.
+    @ObservationIgnored lazy var onDeviceSemanticLayer: OnDeviceSemanticLayer =
+        OnDeviceSemanticLayer(cacheStore: semanticCacheStore)
+
     /// Retained notification-center delegate (banner-while-foreground + tap-opens-link). Set as the
     /// `UNUserNotificationCenter` delegate in `CurioApp.init`.
     @ObservationIgnored lazy var reminderNotificationDelegate: ReminderNotificationCenterDelegate =
@@ -353,7 +363,8 @@ final class AppEnvironment {
             tokenStore: tokenStore,
             chronosFlowBridge: chronosFlowBridge,
             liveActivityManager: liveActivityManager,
-            reminderScheduler: reminderScheduler
+            reminderScheduler: reminderScheduler,
+            semanticLayer: onDeviceSemanticLayer
         )
     }
 

@@ -363,6 +363,21 @@ struct CurioChatView: View {
                     .buttonStyle(.curioPressBounce)
                     .accessibilityIdentifier("chat_retry_\(msg.id)")
                 }
+                if isAi && !isError && msg.semanticCacheHit {
+                    Text("Cached")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(colors.onSurface.opacity(0.45))
+                        .accessibilityIdentifier("chat_cached_badge_\(msg.id)")
+                }
+                if isAi && !isError && msg.showsSemanticFeedback {
+                    SemanticFeedbackRow(messageId: msg.id) { accepted in
+                        viewModel.submitSemanticFeedback(messageId: msg.id, accepted: accepted)
+                    }
+                } else if isAi && !isError, msg.semanticFeedbackAccepted != nil {
+                    Text(msg.semanticFeedbackAccepted == true ? "Thanks for the feedback" : "Feedback noted")
+                        .font(.system(size: 11))
+                        .foregroundStyle(colors.onSurface.opacity(0.45))
+                }
                 if isAi && !isError && !msg.citations.isEmpty {
                     CitationStrip(citations: msg.citations)
                 }
@@ -518,6 +533,44 @@ private struct ChatBubbleView: View {
                 CurioNotifier.notify("Failed to copy")
             }
             #endif
+        }
+    }
+}
+
+// MARK: - SemanticFeedbackRow
+
+/// Thumbs up/down for sidecar-served assistant replies.
+private struct SemanticFeedbackRow: View {
+    let messageId: String
+    let onFeedback: (Bool) -> Void
+
+    @Environment(\.curioColors) private var colors
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                onFeedback(true)
+            } label: {
+                Image(systemName: "hand.thumbsup")
+                    .font(.system(size: 14))
+                    .foregroundStyle(colors.onSurface.opacity(0.55))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.curioPressBounce)
+            .accessibilityLabel("Helpful response")
+            .accessibilityIdentifier("chat_feedback_up_\(messageId)")
+
+            Button {
+                onFeedback(false)
+            } label: {
+                Image(systemName: "hand.thumbsdown")
+                    .font(.system(size: 14))
+                    .foregroundStyle(colors.onSurface.opacity(0.55))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.curioPressBounce)
+            .accessibilityLabel("Unhelpful response")
+            .accessibilityIdentifier("chat_feedback_down_\(messageId)")
         }
     }
 }

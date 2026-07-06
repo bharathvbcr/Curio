@@ -113,8 +113,6 @@ struct BookmarkApp: View {
                 LoginView(
                     state: authViewModel.authState,
                     tier: resolvedTier,
-                    errorMessage: authViewModel.loginError,
-                    onDismissError: { authViewModel.clearLoginError() },
                     onLoginClick: {
                         authViewModel.clearLoginError()
                         authViewModel.onLoginClick { result in
@@ -127,7 +125,9 @@ struct BookmarkApp: View {
                                 )
                             }
                         }
-                    }
+                    },
+                    errorMessage: authViewModel.loginError,
+                    onDismissError: { authViewModel.clearLoginError() }
                 )
             }
         }

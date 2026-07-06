@@ -318,7 +318,8 @@ final class XAiAnalyzer: Sendable {
     func generateChatResponse(
         contextPrompt: String,
         systemInstruction: String = "You are a helpful AI assistant.",
-        searchParameters: XAiSearchParameters? = nil
+        searchParameters: XAiSearchParameters? = nil,
+        reasoningEffort: String? = nil
     ) async -> ChatResponse {
         let apiKey = keyResolver.resolve()
         guard keyResolver.isConfigured() else {
@@ -331,6 +332,7 @@ final class XAiAnalyzer: Sendable {
                 XAiMessage(role: "user", content: contextPrompt)
             ],
             temperature: 0.7,
+            reasoningEffort: reasoningEffort,
             searchParameters: searchParameters
         )
         do {
