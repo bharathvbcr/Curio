@@ -37,14 +37,6 @@ object GrokModels {
      * already degrades to on-device EmbeddingGemma / recency fallback when that happens.
      */
     const val EMBEDDING = "grok-embedding-small"
-
-    /** Legacy IDs kept for reference; these auto-redirect server-side. Do not use for new calls. */
-    object Legacy {
-        const val GROK_3 = "grok-3"
-        const val GROK_3_MINI = "grok-3-mini"
-        const val GROK_4 = "grok-4"
-        const val GROK_2_IMAGE = "grok-2-image"
-    }
 }
 
 /** Allowed values for the `reasoning_effort` request field on reasoning-capable Grok models. */

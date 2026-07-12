@@ -3,7 +3,7 @@
 //  Curio
 //
 //  Ports: app/src/main/java/com/example/ui/theme/Motion.kt
-//         (CurioMotion springs, Modifier.pressBounce, Modifier.bounceScale, curioExpandSpec).
+//         (CurioMotion springs, Modifier.pressBounce, Modifier.bounceScale).
 //
 //  CONVENTIONS §8 (Motion) + §10/§13 (Accessibility): `CurioMotion` springs map Compose
 //  damping → SwiftUI (`bouncy/liquid/snappy/gentle` + `fade`). `CurioPressBounceStyle: ButtonStyle`
@@ -63,10 +63,6 @@ enum CurioMotion {
     /// Smooth fade timing used to pair with spring movement.
     /// Compose: `tween(durationMillis = 240, easing = EaseInOutCubic)`.
     static var fade: Animation { .timingCurve(0.65, 0.0, 0.35, 1.0, duration: 0.240) }
-
-    /// Content-size spring used for expand/collapse reveals (ports `curioExpandSpec()`,
-    /// which returns `liquid()`).
-    static var expand: Animation { liquid }
 
     /// Reduce-Motion-aware variant: returns a near-instant ease when the user has enabled
     /// Reduce Motion, otherwise the requested spring. Call sites that drive infinite or

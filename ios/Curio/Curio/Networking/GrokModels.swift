@@ -36,14 +36,6 @@ enum GrokModels {
     /// best-effort and will typically return `nil` — the embedding provider selector already
     /// degrades to on-device EmbeddingGemma / recency fallback when that happens.
     static let embedding = "grok-embedding-small"
-
-    /// Legacy IDs kept for reference; these auto-redirect server-side. Do not use for new calls.
-    enum Legacy {
-        static let grok3 = "grok-3"
-        static let grok3Mini = "grok-3-mini"
-        static let grok4 = "grok-4"
-        static let grok2Image = "grok-2-image"
-    }
 }
 
 /// Allowed values for the `reasoning_effort` request field on reasoning-capable Grok models.

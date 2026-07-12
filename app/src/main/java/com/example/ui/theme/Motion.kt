@@ -2,7 +2,6 @@ package com.example.ui.theme
 
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.EaseInOutCubic
-import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.animateFloatAsState
@@ -123,9 +122,6 @@ fun Modifier.bounceScale(active: Boolean, activeScale: Float = 1.04f): Modifier 
     )
     this.scale(scale)
 }
-
-/** Content-size spring used for expand/collapse reveals. */
-fun <T> curioExpandSpec(): FiniteAnimationSpec<T> = CurioMotion.liquid()
 
 /**
  * Guarantees a minimum interactive target (default 48dp, the Material/WCAG floor) around a

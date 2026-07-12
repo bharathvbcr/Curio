@@ -113,18 +113,3 @@ fun BookmarkTheme(
     }
 }
 
-/**
- * Backward compatibility wrapper for MyApplicationTheme
- */
-@Composable
-fun MyApplicationTheme(
-    darkTheme: Boolean = true,
-    dynamicColor: Boolean = false,
-    content: @Composable () -> Unit
-) {
-    BookmarkTheme(
-        darkTheme = darkTheme,
-        dynamicColor = dynamicColor,
-        content = content
-    )
-}

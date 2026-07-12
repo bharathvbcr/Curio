@@ -3,7 +3,7 @@
 //  Curio
 //
 //  Ports: app/src/main/java/com/example/ui/CurioComponents.kt
-//         (CategoryPill, TagChip, CurioActionChip, DetailPanel, MarkdownDetailPanel, StatTile,
+//         (TagChip, DetailPanel, MarkdownDetailPanel, StatTile,
 //          CurioFallbackCover, FeedIconAction, QuickFilterPill, TypingDots).
 //
 //  Reusable feed/detail widgets: chips, pills, panels, tiles, the no-image fallback cover,
@@ -27,26 +27,6 @@
 
 import SwiftUI
 
-// MARK: - CategoryPill
-
-/// A pill showing the AI category with its deterministic color. Used in the bulk-category
-/// dialog preview row; the color comes from the stable Java-hashCode palette (CONVENTIONS §10).
-struct CategoryPill: View {
-    let category: String
-
-    var body: some View {
-        let color = CurioFormat.getCategoryColor(category)
-        Text(category.uppercased())
-            .font(.system(size: 10, weight: .black))
-            .tracking(0.8)
-            .foregroundStyle(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.16), in: Capsule())
-            .overlay { Capsule().stroke(color.opacity(0.45), lineWidth: 1) }
-    }
-}
-
 // MARK: - TagChip
 
 /// A tappable `#tag` chip with press bounce. Tapping selects the tag as a search filter.
@@ -64,39 +44,6 @@ struct TagChip: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(colors.primary.opacity(0.10), in: Capsule())
-        }
-        .buttonStyle(.curioPressBounce)
-    }
-}
-
-// MARK: - CurioActionChip
-
-/// A labelled, icon-led action chip; `filled` flips it to a solid accent button.
-struct CurioActionChip: View {
-    let label: String
-    let systemImage: String
-    let color: Color
-    var filled: Bool = false
-    let onTap: () -> Void
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 14, height: 14)
-                    .foregroundStyle(filled ? colors.onPrimary : color)
-                Text(label)
-                    .font(.system(size: 11, weight: .heavy))
-                    .tracking(1.0)
-                    .foregroundStyle(filled ? colors.onPrimary : color)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(filled ? color : color.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.curioPressBounce)
     }

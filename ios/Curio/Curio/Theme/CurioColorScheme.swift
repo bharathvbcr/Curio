@@ -2,9 +2,7 @@
 //  CurioColorScheme.swift
 //  Curio
 //
-//  Ports: app/src/main/java/com/example/ui/theme/Theme.kt (DarkColorScheme / LightColorScheme)
-//         app/src/main/java/com/example/ui/theme/Color.kt is intentionally ignored
-//         (those Purple40/80 tokens are unused dead code from the M3 template).
+//  Ports: app/src/main/java/com/example/ui/theme/Theme.kt (DarkColorScheme / LightColorScheme).
 //
 //  CONVENTIONS §8 (Theme tokens): a custom `CurioColorScheme` struct mirrors every
 //  Material3 role. `static dark` / `static light` carry the EXACT Cosmic Slate hex

@@ -3,7 +3,7 @@
 //  Curio
 //
 //  Ports: app/src/main/java/com/example/ui/components/CurioLogo.kt
-//         (CurioLogoMark, CurioLogo, the private `curioMarkPath` geometry).
+//         (CurioLogoMark, the private `curioMarkPath` geometry).
 //
 //  CONVENTIONS §8 (Theme/Liquid-Glass) + DESIGN: the brand mark is the SAME 108x108
 //  geometry as the launcher icon (res/drawable/ic_launcher_foreground.xml) so the in-app
@@ -13,7 +13,7 @@
 //  Compose `Canvas { drawPath(curioMarkPath(size, paddingFraction)) }` becomes a
 //  `Shape` (`CurioMarkShape`) so the path math is reused verbatim and the even-odd
 //  spark cutout is preserved (`Path(eoFill: true)` → SwiftUI fills with `.evenOdd`).
-//  Theme-aware tint defaults to `onSurface` / `onPrimary` (read via `\.curioColors`),
+//  Theme-aware tint defaults to `onSurface` (read via `\.curioColors`),
 //  mirroring the Material `MaterialTheme.colorScheme` defaults in Kotlin.
 //
 
@@ -30,7 +30,7 @@ import SwiftUI
 /// Compose `quadraticTo(cx, cy, x, y)` maps to `path.addQuadCurve(to:control:)`.
 struct CurioMarkShape: Shape {
     /// Breathing-room margin on the limiting axis, as a fraction of that axis. Compose default
-    /// for the bare mark is `0.04`; the badge uses `0.22`.
+    /// for the bare mark is `0.04`.
     var paddingFraction: CGFloat = 0.04
 
     func path(in rect: CGRect) -> Path {
@@ -98,61 +98,7 @@ struct CurioLogoMark: View {
     }
 }
 
-// MARK: - CurioLogo
-
-/// Curio logo as a self-contained badge: the brand mark on a tinted, rounded tile — the in-app
-/// echo of the app icon. The spark cutout reveals the `containerColor` tile behind the mark,
-/// exactly like the launcher icon. Colors default to `primary` / `onPrimary` (Cosmic Slate),
-/// re-theming with light/dark automatically.
-struct CurioLogo<S: Shape>: View {
-    var containerColor: Color? = nil
-    var contentColor: Color? = nil
-    var shape: S
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        ZStack {
-            (containerColor ?? colors.primary)
-            // Larger inset so the bookmark breathes inside the tile, matching the safe-zone
-            // margin the adaptive launcher icon uses (Compose used paddingFraction = 0.22).
-            CurioLogoMark(tint: contentColor ?? colors.onPrimary, paddingFraction: 0.22)
-        }
-        .clipShape(shape)
-        .accessibilityElement()
-        .accessibilityLabel("Curio")
-    }
-}
-
-extension CurioLogo where S == RoundedRectangle {
-    /// Convenience initializer defaulting to the launcher-style 28pt rounded tile (Compose
-    /// default was `RoundedCornerShape(28.dp)`).
-    init(containerColor: Color? = nil, contentColor: Color? = nil) {
-        self.init(
-            containerColor: containerColor,
-            contentColor: contentColor,
-            shape: RoundedRectangle(cornerRadius: 28, style: .continuous)
-        )
-    }
-}
-
 // MARK: - Previews
-
-#Preview("Logo badge — dark") {
-    CurioLogo()
-        .frame(width: 96, height: 96)
-        .padding()
-        .background(Color(argb: 0xFF141218))
-        .environment(\.curioColors, .dark)
-}
-
-#Preview("Logo badge — light") {
-    CurioLogo()
-        .frame(width: 96, height: 96)
-        .padding()
-        .background(Color(argb: 0xFFFEF7FF))
-        .environment(\.curioColors, .light)
-}
 
 #Preview("Bare mark — dark") {
     CurioLogoMark()
@@ -160,4 +106,12 @@ extension CurioLogo where S == RoundedRectangle {
         .padding()
         .background(Color(argb: 0xFF141218))
         .environment(\.curioColors, .dark)
+}
+
+#Preview("Bare mark — light") {
+    CurioLogoMark()
+        .frame(width: 72, height: 72)
+        .padding()
+        .background(Color(argb: 0xFFFEF7FF))
+        .environment(\.curioColors, .light)
 }

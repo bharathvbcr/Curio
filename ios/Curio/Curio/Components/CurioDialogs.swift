@@ -4,10 +4,10 @@
 //
 //  Ports: app/src/main/java/com/example/ui/CurioDialogs.kt
 //         (LocalSlideUpDismiss, SlideUpCard, ManualAddBookmarkDialog, NotesEditorDialog,
-//          BulkCategoryDialog, CurioEmptyState).
+//          CurioEmptyState).
 //
 //  The app's slide-up card pattern (the replacement for centered modal dialogs) plus the
-//  add/notes/category dialogs and the empty state.
+//  add/notes dialogs and the empty state.
 //
 //  CONVENTIONS §8/§9:
 //   - `SlideUpCard` → a `.sheet` with `.presentationDetents([.fraction(0.92)])`, a drag
@@ -18,7 +18,6 @@
 //     standard `dismiss` for Cancel/confirm buttons.
 //   - NotesEditorDialog: empty save clears the note (trim → nil) and the button flips
 //     CLEAR/SAVE; exact user-facing strings preserved.
-//   - BulkCategoryDialog: the fixed 9-category list + per-row deterministic category color dot.
 //   - CurioEmptyState: the orbital sphere + exact copy + INITIALIZE RETRIEVAL SYNC action.
 //   - Press feedback via `.curioPressBounce`; honor Reduce Transparency through `glassSurface`.
 //
@@ -355,72 +354,6 @@ struct NotesEditorDialog: View {
                 .accessibilityIdentifier("note_editor_save")
             }
             .frame(maxWidth: .infinity)
-        }
-    }
-}
-
-// MARK: - BulkCategoryDialog
-
-/// Choose a destination category for all selected bookmarks. Fixed 9-category list, each with a
-/// deterministic color dot (the Java-hashCode palette), plus a CANCEL action.
-struct BulkCategoryDialog: View {
-    let tier: GlassTier
-    let onCategorySelected: (String) -> Void
-
-    @Environment(\.slideUpDismiss) private var dismissCard
-    @Environment(\.curioColors) private var colors
-
-    /// The exact fixed list from the Android dialog.
-    private let categories = ["Work", "Personal", "Reading List", "Development", "Design", "Marketing", "Crypto", "Business", "Life"]
-
-    var body: some View {
-        SlideUpCard(tier: tier, spacing: 16, horizontalAlignment: .center) {
-            Text("CATEGORIZE SELECT ITEMS")
-                .font(.system(size: 18, weight: .heavy))
-                .tracking(1.0)
-                .foregroundStyle(colors.primary)
-
-            Text("Choose a destination category descriptor for all selected bookmarks.")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(colors.onSurface.opacity(0.6))
-                .multilineTextAlignment(.center)
-
-            VStack(spacing: 8) {
-                ForEach(categories, id: \.self) { cat in
-                    Button {
-                        onCategorySelected(cat)
-                        dismissCard()
-                    } label: {
-                        HStack(spacing: 10) {
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(CurioFormat.getCategoryColor(cat))
-                                .frame(width: 10, height: 10)
-                            Text(cat.uppercased())
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(colors.onSurface.opacity(0.8))
-                            Spacer()
-                        }
-                        .padding(.horizontal, 16)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                        .background(colors.onSurface.opacity(0.05),
-                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.curioPressBounce)
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            Button { dismissCard() } label: {
-                Text("CANCEL")
-                    .font(.system(size: 14, weight: .black))
-                    .foregroundStyle(colors.onSurface.opacity(0.6))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(colors.onSurface.opacity(0.08),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.curioPressBounce)
         }
     }
 }

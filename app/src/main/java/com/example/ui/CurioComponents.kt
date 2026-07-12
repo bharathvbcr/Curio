@@ -157,24 +157,6 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Composable
-internal fun CategoryPill(category: String) {
-    val color = getCategoryColor(category)
-    Box(
-        modifier = Modifier
-            .background(color.copy(alpha = 0.16f), RoundedCornerShape(50))
-            .border(1.dp, color.copy(alpha = 0.45f), RoundedCornerShape(50))
-            .padding(horizontal = 10.dp, vertical = 4.dp)
-    ) {
-        Text(
-            text = category.uppercase(),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Black, color = color, fontSize = 10.sp, letterSpacing = 0.8.sp
-            )
-        )
-    }
-}
-
-@Composable
 internal fun TagChip(tag: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
@@ -189,22 +171,6 @@ internal fun TagChip(tag: String, onClick: () -> Unit) {
                 fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary
             )
         )
-    }
-}
-
-@Composable
-internal fun CurioActionChip(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, filled: Boolean = false, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (filled) color else color.copy(alpha = 0.12f))
-            .pressBounce(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        Icon(icon, contentDescription = label, modifier = Modifier.size(14.dp), tint = if (filled) MaterialTheme.colorScheme.onPrimary else color)
-        Text(label, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold, color = if (filled) MaterialTheme.colorScheme.onPrimary else color))
     }
 }
 

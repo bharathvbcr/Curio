@@ -2,7 +2,7 @@
 //  CurioTheme.swift
 //  Curio
 //
-//  Ports: app/src/main/java/com/example/ui/theme/Theme.kt (BookmarkTheme / MyApplicationTheme).
+//  Ports: app/src/main/java/com/example/ui/theme/Theme.kt (BookmarkTheme).
 //
 //  CONVENTIONS §8 (Theme tokens): root theme wrapper that resolves the Cosmic Slate scheme
 //  from the active `colorScheme`, applies an optional `brandSeed` primary override, injects
