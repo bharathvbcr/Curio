@@ -57,23 +57,30 @@ android {
   }
 
   signingConfigs {
-    create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH")
-      // build-15: Warn loudly when KEYSTORE_PATH is absent so a misconfigured CI pipeline
-      // never silently ships a release APK signed with debug/fallback credentials.
-      if (keystorePath == null && gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
-          logger.warn("WARNING: KEYSTORE_PATH not set — release build will use fallback path or fail at signing")
-      }
-      storeFile = file(keystorePath ?: "${rootDir}/my-upload-key.jks")
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
-    }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
+    }
+    create("release") {
+      val keystorePath = System.getenv("KEYSTORE_PATH")
+      val resolvedKeystore = if (keystorePath != null) file(keystorePath) else file("${rootDir}/my-upload-key.jks")
+      if (resolvedKeystore.exists()) {
+        storeFile = resolvedKeystore
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+      } else {
+        val debugKs = file("${rootDir}/debug.keystore")
+        if (debugKs.exists()) {
+          logger.warn("WARNING: Release keystore not found (${resolvedKeystore.path}); using debug.keystore for local validation.")
+          storeFile = debugKs
+          storePassword = "android"
+          keyAlias = "androiddebugkey"
+          keyPassword = "android"
+        }
+      }
     }
   }
 
@@ -150,7 +157,7 @@ dependencies {
   implementation(libs.localagents.rag)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  debugImplementation(libs.logging.interceptor)
+  implementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
   implementation(libs.retrofit)

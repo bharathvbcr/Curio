@@ -52,6 +52,10 @@ integrations:
     default_client: claude
     enabled: true
     signals_path: .devcouncil/live/signals
+  cursor:
+    enabled: true
+    config_path: .cursor/mcp.json
+    hooks_path: .cursor/hooks.json
 models:
   provider: openrouter
   roles:

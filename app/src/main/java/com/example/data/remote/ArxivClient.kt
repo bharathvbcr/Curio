@@ -25,23 +25,24 @@ class ArxivClient(
 
     suspend fun fetchPaper(arxivId: String): ArxivMeta? = withContext(Dispatchers.IO) {
         val cleanId = arxivId.replace(Regex("v\\d+$"), "").trim()
-        val url = "$baseUrl?id_list=$cleanId&max_results=1"
-        var lastBody: String? = null
+        val url = "$baseUrl?id_list=${java.net.URLEncoder.encode(cleanId, "UTF-8")}&max_results=1"
         repeat(3) { attempt ->
             try {
-                val response = client.newCall(Request.Builder().url(url).build()).execute()
-                if (response.code == 503) {
-                    Log.w("ArxivClient", "arXiv HTTP 503 for $arxivId (attempt ${attempt + 1})")
-                    response.body?.close()
-                    kotlinx.coroutines.delay(2000L * (attempt + 1))
-                    return@repeat
+                // use{} guarantees the connection is released on every path (error statuses
+                // previously leaked the response body and its pooled connection).
+                client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                    if (response.code == 503) {
+                        Log.w("ArxivClient", "arXiv HTTP 503 for $arxivId (attempt ${attempt + 1})")
+                        kotlinx.coroutines.delay(2000L * (attempt + 1))
+                        return@use
+                    }
+                    if (!response.isSuccessful) {
+                        Log.w("ArxivClient", "arXiv HTTP ${response.code} for $arxivId")
+                        return@withContext null
+                    }
+                    val body = response.body?.string() ?: return@withContext null
+                    return@withContext parseAtom(body)
                 }
-                if (!response.isSuccessful) {
-                    Log.w("ArxivClient", "arXiv HTTP ${response.code} for $arxivId")
-                    return@withContext null
-                }
-                lastBody = response.body?.string()
-                return@withContext lastBody?.let { parseAtom(it) }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("ArxivClient", "Failed to fetch $arxivId (attempt ${attempt + 1}): ${e.message}")
@@ -140,7 +141,10 @@ class ArxivClient(
     }
 
     companion object {
-        val ARXIV_ID_REGEX = Regex("(?:arxiv\\.org|ar5iv\\.org)/(?:abs|pdf)/([\\d.]+(?:v\\d+)?)")
+        // Modern arXiv IDs are YYMM.NNNNN(±vN). The previous [\d.]+ capture swallowed the
+        // trailing dot of /pdf/2401.00001.pdf links (captured "2401.00001."), producing
+        // API queries that could never resolve.
+        val ARXIV_ID_REGEX = Regex("(?:arxiv\\.org|ar5iv\\.org)/(?:abs|pdf)/(\\d{4}\\.\\d{4,5}(?:v\\d+)?)")
         val ARXIV_BARE_REGEX = Regex("\\b(\\d{4}\\.\\d{4,5}(?:v\\d+)?)\\b")
     }
 }

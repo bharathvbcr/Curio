@@ -61,9 +61,13 @@ class BookmarkRepositoryImpl(
 
     /** Fire-and-forget cloud mirror for a single bookmark id. */
     private fun mirrorToCloud(id: String) {
+        // Bounded like every other Firestore call: a hung backend must not leak a parked
+        // coroutine per local write (the mock backend can hang indefinitely on .set()).
         mirrorScope.launch {
             try {
-                dao.getBookmarkById(id)?.let { firebaseSyncManager.pushBookmark(it.userId, it.toDomain()) }
+                withTimeoutOrNull(FIREBASE_TIMEOUT_MS) {
+                    dao.getBookmarkById(id)?.let { firebaseSyncManager.pushBookmark(it.userId, it.toDomain()) }
+                } ?: Log.w("BookmarkRepo", "Cloud mirror timed out for $id")
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Cloud mirror failed for $id: ${e.message}")
@@ -91,8 +95,6 @@ class BookmarkRepositoryImpl(
         private const val MANUAL_BOOKMARK_PREFIX = "manual_"
         // Prefix for IDs generated for user-created Spaces.
         private const val SPACE_ID_PREFIX = "space_"
-        // Delimiter used when serialising/deserialising tag lists to/from a CSV column.
-        private const val TAG_DELIMITER = ","
         // Maximum characters in the extracted title snippet from URL/text.
         private const val TITLE_SNIPPET_LIMIT = 50
 
@@ -113,6 +115,92 @@ class BookmarkRepositoryImpl(
             "new", "using", "use", "via", "into", "your", "our", "you", "https", "http",
             "com", "www", "about", "what", "when", "will", "can", "has", "have"
         )
+
+        /**
+         * Bind-variable ceiling for `IN (...)` collections. Room expands each list item into a
+         * separate SQL parameter; legacy SQLite builds fail at 999 ("too many SQL variables").
+         * 500 keeps every statement safe on all supported devices with ample headroom.
+         */
+        internal const val SQLITE_IN_CHUNK = 500
+
+        /**
+         * Recency picks the winner side, but a blank value on the winner must never erase
+         * content present on the loser: the push payload omits several fields by design and
+         * device/server clocks skew, so an unguarded "cloud is newer" copy-in used to blank
+         * locally-stored bodies (manual bookmarks lost their text on every sync's pull phase).
+         */
+        private fun pick(winner: String?, loser: String?): String? =
+            if (winner.isNullOrBlank() && !loser.isNullOrBlank()) loser else winner ?: loser
+
+        /**
+         * Pure reconciliation of one cloud pull against the local rows.
+         *
+         * Contract:
+         * - A cloud-only row (no local copy) is materialised only if it carries something
+         *   displayable. The push payload deliberately omits body text, so a row that is
+         *   empty on text AND title AND url is an orphaned tombstone — previously it was
+         *   re-inserted as an empty card (e.g. when a best-effort cloud delete failed).
+         * - Locally-explicit UI state (`isFavorite`, `isSavedForLater`) always wins over the
+         *   cloud copy regardless of timestamps: explicit user intent beats recency, and a
+         *   stale cloud flag means a failed mirror — the old OR-merge resurrected
+         *   unfavorited/unsaved items forever.
+         * - Content fields: when the cloud document is provably newer (its server `updatedAt`
+         *   exceeds the local trigger-maintained stamp), the cloud side wins — except that
+         *   [pick] never lets a blank winner erase real content. Otherwise the local side
+         *   wins with gaps filled from the cloud.
+         * - embedding/spaceId/notes are local-only and always preserved.
+         * - The merged row carries the newer of the two stamps.
+         */
+        internal fun mergeCloudPull(
+            existingById: Map<String, BookmarkEntity>,
+            fresh: List<BookmarkEntity>,
+            cloudUpdatedAtById: Map<String, Long> = emptyMap(),
+            fallbackNowMs: Long = System.currentTimeMillis()
+        ): List<BookmarkEntity> = fresh.mapNotNull { cloud ->
+            val existing = existingById[cloud.id]
+            val cloudStamp = cloudUpdatedAtById[cloud.id]
+            if (existing == null) {
+                val displayable = cloud.text.isNotBlank() ||
+                    !cloud.title.isNullOrBlank() || !cloud.url.isNullOrBlank()
+                if (!displayable) return@mapNotNull null
+                // New row from the cloud adopts the cloud's modification stamp so a later
+                // pull can order it correctly; unknown stamps degrade to "now".
+                cloud.copy(updatedAt = cloudStamp ?: fallbackNowMs)
+            } else {
+                val cloudNewer = cloudStamp != null && cloudStamp > existing.updatedAt
+                val winner = if (cloudNewer) cloud else existing
+                val loser = if (cloudNewer) existing else cloud
+                cloud.copy(
+                    text = pick(winner.text, loser.text) ?: "",
+                    title = pick(winner.title, loser.title),
+                    url = pick(winner.url, loser.url),
+                    summary = pick(winner.summary, loser.summary),
+                    tags = pick(winner.tags, loser.tags),
+                    category = pick(winner.category, loser.category),
+                    imageUrl = pick(winner.imageUrl, loser.imageUrl),
+                    ocrText = pick(winner.ocrText, loser.ocrText),
+                    // OR-flags stay monotonic: analysis state must never regress either way.
+                    isOcrScheduled = existing.isOcrScheduled || cloud.isOcrScheduled,
+                    isAnalyzed = existing.isAnalyzed || cloud.isAnalyzed,
+                    sourceType = winner.sourceType ?: loser.sourceType,
+                    sourceId = winner.sourceId ?: loser.sourceId,
+                    sourceTitle = pick(winner.sourceTitle, loser.sourceTitle),
+                    sourceAuthors = pick(winner.sourceAuthors, loser.sourceAuthors),
+                    sourceAbstract = pick(winner.sourceAbstract, loser.sourceAbstract),
+                    sourceExtra = pick(winner.sourceExtra, loser.sourceExtra),
+                    entities = pick(winner.entities, loser.entities),
+                    deepSummary = pick(winner.deepSummary, loser.deepSummary),
+                    isDeepAnalyzed = existing.isDeepAnalyzed || cloud.isDeepAnalyzed,
+                    referenceCount = maxOf(existing.referenceCount, cloud.referenceCount),
+                    embedding = existing.embedding,
+                    isFavorite = existing.isFavorite,
+                    isSavedForLater = existing.isSavedForLater,
+                    spaceId = existing.spaceId,
+                    notes = existing.notes,
+                    updatedAt = maxOf(existing.updatedAt, cloudStamp ?: 0L)
+                )
+            }
+        }
     }
 
     override fun getBookmarksFlow(userId: String): Flow<List<Bookmark>> =
@@ -127,10 +215,15 @@ class BookmarkRepositoryImpl(
             val entities = if (query.isBlank()) {
                 dao.getBookmarks(userId).first()
             } else {
-                dao.search(userId, query).first()
+                // Escape LIKE metacharacters so "100%" finds literal "100%", not "100" + anything.
+                dao.search(userId, escapeLike(query)).first()
             }
             entities.map { it.toDomain() }
         }
+
+    /** Neutralises SQL LIKE wildcards; paired with the DAO's ESCAPE clause. */
+    private fun escapeLike(raw: String): String =
+        raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     override suspend fun syncBookmarks(userId: String, fetchNextPage: Boolean): Result<Unit> =
         withContext(Dispatchers.IO) {
@@ -144,17 +237,17 @@ class BookmarkRepositoryImpl(
 
             // 1. Firebase pull (bounded — a hung Firestore call must not block the X sync)
             try {
-                val cloudBookmarks = withTimeoutOrNull(FIREBASE_TIMEOUT_MS) {
+                val cloudPull = withTimeoutOrNull(FIREBASE_TIMEOUT_MS) {
                     firebaseSyncManager.pullBookmarks(userId)
                 }
-                if (cloudBookmarks == null) {
+                if (cloudPull == null) {
                     Log.w("BookmarkRepo", "Firebase pull timed out after ${FIREBASE_TIMEOUT_MS}ms; continuing with X sync")
-                } else if (cloudBookmarks.isNotEmpty()) {
-                    val freshEntities = cloudBookmarks.map { cb ->
+                } else if (cloudPull.bookmarks.isNotEmpty()) {
+                    val freshEntities = cloudPull.bookmarks.map { cb ->
                         BookmarkEntity(
                             id = cb.id, text = cb.text, createdAt = cb.createdAt, userId = userId,
                             title = cb.title, url = cb.url, summary = cb.summary,
-                            tags = if (cb.tags.isEmpty()) null else cb.tags.joinToString(TAG_DELIMITER),
+                            tags = com.example.data.local.TagCodec.encode(cb.tags),
                             category = cb.category, imageUrl = cb.imageUrl, ocrText = cb.ocrText,
                             isOcrScheduled = cb.isOcrScheduled, isAnalyzed = cb.isAnalyzed,
                             sourceType = cb.sourceType?.name, sourceId = cb.sourceId,
@@ -165,36 +258,13 @@ class BookmarkRepositoryImpl(
                         )
                     }
                     val freshIds = freshEntities.map { it.id }
-                    val existingMap = dao.getBookmarksByIds(freshIds).associateBy { it.id }
-                    // TODO: simple last-writer-wins using updatedAt — once BookmarkEntity gains
-                    //  an `updatedAt` column, compare it here: if existing.updatedAt > cloud
-                    //  updatedAt, keep the local copy rather than merging the cloud version in.
-                    //  For now we merge unconditionally, preferring non-null local fields.
-                    val merged = freshEntities.map { fresh ->
-                        val existing = existingMap[fresh.id]
-                        if (existing != null) {
-                            fresh.copy(
-                                summary = fresh.summary ?: existing.summary,
-                                tags = fresh.tags ?: existing.tags,
-                                category = fresh.category ?: existing.category,
-                                imageUrl = fresh.imageUrl ?: existing.imageUrl,
-                                ocrText = fresh.ocrText ?: existing.ocrText,
-                                isOcrScheduled = fresh.isOcrScheduled || existing.isOcrScheduled,
-                                isAnalyzed = fresh.isAnalyzed || existing.isAnalyzed,
-                                sourceType = fresh.sourceType ?: existing.sourceType,
-                                sourceId = fresh.sourceId ?: existing.sourceId,
-                                sourceTitle = fresh.sourceTitle ?: existing.sourceTitle,
-                                sourceAuthors = fresh.sourceAuthors ?: existing.sourceAuthors,
-                                sourceAbstract = fresh.sourceAbstract ?: existing.sourceAbstract,
-                                entities = fresh.entities ?: existing.entities,
-                                embedding = existing.embedding,
-                                isFavorite = existing.isFavorite || fresh.isFavorite,
-                                isSavedForLater = existing.isSavedForLater || fresh.isSavedForLater,
-                                spaceId = existing.spaceId, notes = existing.notes
-                            )
-                        } else fresh
-                    }
-                    dao.insertBookmarks(merged)
+                    // getBookmarksByIds expands to one bind variable per id — chunk to stay
+                    // far below SQLite's per-statement variable cap for large cloud pulls.
+                    val existingMap = freshIds.chunked(SQLITE_IN_CHUNK)
+                        .flatMap { dao.getBookmarksByIds(it) }
+                        .associateBy { it.id }
+                    val merged = mergeCloudPull(existingMap, freshEntities, cloudPull.updatedAtById)
+                    if (merged.isNotEmpty()) dao.insertBookmarks(merged)
                 }
                 firebaseSyncSuccess = true
             } catch (e: Exception) {
@@ -235,6 +305,9 @@ class BookmarkRepositoryImpl(
                                 .associateBy { it.id }
 
                             val entities = (response.data ?: emptyList()).map { dto ->
+                                // A present-but-malformed timestamp must fall back to now —
+                                // parseRfc3339ToEpoch returns null on failure, and a 0 sentinel
+                                // used to date the bookmark 1970 (sorting + citation exports).
                                 val epochMs = dto.createdAt?.let { parseRfc3339ToEpoch(it) }
                                     ?: System.currentTimeMillis()
                                 // Prefer the long-form note_tweet body over the truncated `text`.
@@ -263,7 +336,11 @@ class BookmarkRepositoryImpl(
                             }
 
                             val freshIds = entities.map { it.id }
-                            val existingMap = dao.getBookmarksByIds(freshIds).associateBy { it.id }
+                            // Bounded by X_PAGE_SIZE today; chunked anyway so a future
+                            // page-size bump can't silently cross SQLite's variable cap.
+                            val existingMap = freshIds.chunked(SQLITE_IN_CHUNK)
+                                .flatMap { dao.getBookmarksByIds(it) }
+                                .associateBy { it.id }
                             val merged = entities.map { fresh ->
                                 val existing = existingMap[fresh.id]
                                 if (existing != null) {
@@ -364,8 +441,8 @@ class BookmarkRepositoryImpl(
     override suspend fun updateAnalysisAndTags(
         id: String, summary: String?, category: String?, tags: List<String>, entities: String?
     ) = withContext(Dispatchers.IO) {
-        val csv = if (tags.isEmpty()) null else tags.joinToString(TAG_DELIMITER)
-        dao.updateAnalysis(id, summary, csv, category, isAnalyzed = true, entities = entities)
+        val encoded = com.example.data.local.TagCodec.encode(tags)
+        dao.updateAnalysis(id, summary, encoded, category, isAnalyzed = true, entities = entities)
         mirrorToCloud(id)
         Unit
     }
@@ -409,13 +486,14 @@ class BookmarkRepositoryImpl(
     }
 
     override suspend fun deleteBookmarks(ids: List<String>) = withContext(Dispatchers.IO) {
-        val entities = ids.mapNotNull { dao.getBookmarkById(it) }
-        dao.deleteBookmarks(ids)
+        // Chunked: Room expands IN(...) into one bind variable per id and unbounded caller
+        // lists (bulk selection, dedup sweeps) overflow SQLite's per-statement variable cap.
+        ids.chunked(SQLITE_IN_CHUNK).forEach { dao.deleteBookmarks(it) }
         // Fire-and-forget cloud delete for the same reason as addBookmark: never block the local
         // delete on a slow/unreachable Firestore.
         mirrorScope.launch {
             try {
-                entities.forEach { firebaseSyncManager.deleteBookmarks(listOf(it.id)) }
+                firebaseSyncManager.deleteBookmarks(ids)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("BookmarkRepo", "Firebase delete error: ${e.message}")
@@ -426,7 +504,7 @@ class BookmarkRepositoryImpl(
 
     override suspend fun updateCategoryForIds(ids: List<String>, category: String) =
         withContext(Dispatchers.IO) {
-            dao.updateCategoryForIds(ids, category)
+            ids.chunked(SQLITE_IN_CHUNK).forEach { dao.updateCategoryForIds(it, category) }
             ids.forEach { mirrorToCloud(it) }
             Unit
         }
@@ -484,8 +562,9 @@ class BookmarkRepositoryImpl(
                 Log.d("BookmarkRepo", "Deduped $sourceId: kept ${canonical.id}, removing $duplicateIds")
             }
         }
-        // Single bulk delete — one DB operation instead of N separate deletes in the loop.
-        if (allDuplicateIds.isNotEmpty()) dao.deleteBookmarks(allDuplicateIds)
+        // Chunked bulk delete — one logical operation instead of N separate deletes, without
+        // overflowing the IN(...) bind-variable cap on large duplicate sweeps.
+        allDuplicateIds.chunked(SQLITE_IN_CHUNK).forEach { dao.deleteBookmarks(it) }
         allDuplicateIds.size
     }
 
@@ -597,7 +676,7 @@ class BookmarkRepositoryImpl(
     }
 
     override suspend fun assignToSpace(ids: List<String>, spaceId: String?) = withContext(Dispatchers.IO) {
-        dao.updateSpaceForIds(ids, spaceId)
+        ids.chunked(SQLITE_IN_CHUNK).forEach { dao.updateSpaceForIds(it, spaceId) }
         Unit
     }
 
@@ -623,7 +702,7 @@ class BookmarkRepositoryImpl(
         val matches = ruleFilingCandidates(space.userId)
             .filter { rules.matches(it) }
             .map { it.id }
-        if (matches.isNotEmpty()) dao.updateSpaceForIds(matches, spaceId)
+        matches.chunked(SQLITE_IN_CHUNK).forEach { dao.updateSpaceForIds(it, spaceId) }
         matches.size
     }
 
@@ -675,7 +754,7 @@ class BookmarkRepositoryImpl(
             .groupBy { it.category!!.trim().lowercase() }
         unfiledByCategory.forEach { (category, items) ->
             val spaceId = ensureCategorySpace(userId, category) ?: return@forEach
-            dao.updateSpaceForIds(items.map { it.id }, spaceId)
+            items.map { it.id }.chunked(SQLITE_IN_CHUNK).forEach { dao.updateSpaceForIds(it, spaceId) }
         }
         Unit
     }
@@ -707,7 +786,8 @@ class BookmarkRepositoryImpl(
             // 1. Auto-file high-confidence matches — one UPDATE per target Space.
             var autoFiled = 0
             plan.autoFile.groupBy { it.spaceId }.forEach { (spaceId, items) ->
-                dao.updateSpaceForIds(items.map { it.bookmarkId }, spaceId)
+                items.map { it.bookmarkId }.chunked(SQLITE_IN_CHUNK)
+                    .forEach { dao.updateSpaceForIds(it, spaceId) }
                 autoFiled += items.size
             }
 
@@ -715,7 +795,9 @@ class BookmarkRepositoryImpl(
             var newSpaces = 0
             val takenNames = spaceDao.getSpacesDirect(userId).map { it.name.lowercase() }.toMutableSet()
             plan.clusters.forEachIndexed { index, cluster ->
-                val members = dao.getBookmarksByIds(cluster.bookmarkIds).map { it.toDomain() }
+                val members = cluster.bookmarkIds.chunked(SQLITE_IN_CHUNK)
+                    .flatMap { dao.getBookmarksByIds(it) }
+                    .map { it.toDomain() }
                 val name = deriveClusterName(members, takenNames, index)
                 takenNames += name.lowercase()
                 val (color, icon) = CLUSTER_PALETTE[index % CLUSTER_PALETTE.size]
@@ -724,7 +806,8 @@ class BookmarkRepositoryImpl(
                     description = "Auto-created from similar bookmarks",
                     rules = SpaceRules.EMPTY, isPinned = false
                 )
-                dao.updateSpaceForIds(cluster.bookmarkIds, space.id)
+                cluster.bookmarkIds.chunked(SQLITE_IN_CHUNK)
+                    .forEach { dao.updateSpaceForIds(it, space.id) }
                 newSpaces++
             }
 
@@ -881,11 +964,15 @@ class BookmarkRepositoryImpl(
         }
     }
 
-    private fun parseRfc3339ToEpoch(iso: String): Long {
+    /**
+     * Parses an RFC-3339 timestamp to epoch millis, or null when malformed — callers must
+     * supply their own fallback (a 0 sentinel leaked into sorting and citation exports).
+     */
+    private fun parseRfc3339ToEpoch(iso: String): Long? {
         return try {
             java.time.Instant.parse(iso).toEpochMilli()
         } catch (e: Exception) {
-            0L
+            null
         }
     }
 
@@ -903,7 +990,7 @@ class BookmarkRepositoryImpl(
     }
 
     private fun BookmarkEntity.toDomain(): Bookmark {
-        val tagList = tags?.split(TAG_DELIMITER)?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        val tagList = com.example.data.local.TagCodec.decode(tags)
         val srcType = sourceType?.let { runCatching { SourceType.valueOf(it) }.getOrNull() }
         return Bookmark(
             id = id, text = text, createdAt = createdAt, userId = userId,
@@ -925,7 +1012,7 @@ class BookmarkRepositoryImpl(
     private fun Bookmark.toEntity(): BookmarkEntity = BookmarkEntity(
         id = id, text = text, createdAt = createdAt, userId = userId,
         title = title, url = url, summary = summary,
-        tags = tags.takeIf { it.isNotEmpty() }?.joinToString(TAG_DELIMITER),
+        tags = com.example.data.local.TagCodec.encode(tags),
         category = category, imageUrl = imageUrl, ocrText = ocrText,
         isOcrScheduled = isOcrScheduled, isAnalyzed = isAnalyzed,
         sourceType = sourceType?.name, sourceId = sourceId,

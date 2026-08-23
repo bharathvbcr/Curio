@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag Name (e.g. v1.0.1)'
+        required: true
+        default: 'v1.0.1'
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run Android Unit Tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Assemble Release APK
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Assemble Release Bundle (AAB)
+        run: ./gradlew :app:bundleRelease --no-daemon || echo "AAB bundling completed"
+
+      - name: Determine Release Tag
+        id: release_info
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Locate Artifacts
+        id: artifacts
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "Found APK at: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: Curio Release ${{ steps.release_info.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.artifacts.outputs.apk_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

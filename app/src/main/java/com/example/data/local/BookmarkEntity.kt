@@ -55,7 +55,14 @@ data class BookmarkEntity(
     // Spaces: user-created collection membership (null = unfiled). Local-only; not cloud-mirrored.
     val spaceId: String? = null,
     // User's personal note/annotation on this entry (null = none). Local-only; not cloud-mirrored.
-    val notes: String? = null
+    val notes: String? = null,
+    /**
+     * Last-local-write stamp (epoch ms), maintained by the `bookmarks_touch_updated_at` DB
+     * triggers created in migration 12→13 — every INSERT/UPDATE on the table refreshes it, so
+     * callers never set it manually. Compared against the cloud document's `updatedAt` during
+     * pull reconciliation to pick the newer side (last-writer-wins for content fields).
+     */
+    val updatedAt: Long = 0
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

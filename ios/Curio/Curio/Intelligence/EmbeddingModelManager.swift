@@ -210,11 +210,14 @@ final class EmbeddingModelManager {
             request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         }
 
-        // A dedicated session: long resource timeout, no body logging.
+        // A dedicated session: long resource timeout, no body logging. URLSession is retained by
+        // the system until invalidated — without finishTasksAndInvalidate() every download
+        // attempt (including each retry) leaked one session for the rest of the process.
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
         let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
 
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {

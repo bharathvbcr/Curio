@@ -53,6 +53,9 @@ class TokenStore(private val context: Context) {
         private val KEY_GLASS_TIER_OVERRIDE = stringPreferencesKey("glass_tier_override")
 
         @Volatile private var debugFallbackKey: javax.crypto.SecretKey? = null
+
+        /** Upper bound on a legitimate envelope IV length (AES-GCM uses 12; allow headroom). */
+        private const val MAX_IV_BYTES = 64
     }
 
     init {
@@ -382,7 +385,11 @@ class TokenStore(private val context: Context) {
                     ((combined[2].toInt() and 0xFF) shl 8) or
                     (combined[3].toInt() and 0xFF)
 
-            if (combined.size < 4 + ivSize) return null
+            // Harden the envelope header against corruption/hostility before allocating:
+            // a huge or negative length used to slip past the size check via Int overflow
+            // (4 + ivSize wraps negative), then ByteArray(huge) threw OutOfMemoryError —
+            // an Error the catch below cannot intercept. Real GCM IVs are 12 bytes.
+            if (ivSize <= 0 || ivSize > MAX_IV_BYTES || combined.size < 4 + ivSize) return null
 
             val iv = ByteArray(ivSize)
             System.arraycopy(combined, 4, iv, 0, ivSize)

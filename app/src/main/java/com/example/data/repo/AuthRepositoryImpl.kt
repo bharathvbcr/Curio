@@ -118,6 +118,10 @@ class AuthRepositoryImpl(
             _authState.value = AuthState.SignedIn(userId = userId, username = username, name = name)
             Result.success(Unit)
         } catch (e: Exception) {
+            // A cancelled login must propagate as cancellation — swallowing it used to
+            // report Result.failure AND clobber _authState to SignedOut even when the user
+            // had a valid prior session.
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Log.e(TAG, "Token exchange failed", e)
             _authState.value = AuthState.SignedOut
             Result.failure(e)

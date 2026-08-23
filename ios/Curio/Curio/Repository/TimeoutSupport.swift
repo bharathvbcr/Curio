@@ -58,6 +58,11 @@ func withTimeout<T: Sendable>(
             case .value(let value):
                 return value
             case .timeout:
+                // When the SLEEP child loses to outer cancellation, `try?` turns its
+                // CancellationError into a normal `.timeout` result — returning nil here would
+                // report "the operation timed out" for what was really a cancelled caller,
+                // masking structured-concurrency semantics (CONVENTIONS §4). Distinguish the two.
+                if Task.isCancelled { throw CancellationError() }
                 return nil
             }
         }

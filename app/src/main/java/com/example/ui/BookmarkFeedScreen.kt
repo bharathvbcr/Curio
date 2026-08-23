@@ -86,9 +86,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -137,6 +134,7 @@ import com.example.ui.components.GlassScaffold
 import com.example.ui.components.GlassTopBar
 import com.example.ui.components.LiquidGlassFab
 import com.example.ui.components.CurioSkeletonList
+import com.example.ui.components.SwipeRevealActions
 import com.example.ui.screens.auth.AuthViewModel
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.theme.BookmarkTheme
@@ -228,6 +226,9 @@ internal fun BookmarkFeedScreen(
     var showActionsMenu by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
+    // Id of the card whose swipe Delete dock is currently open. Hoisted so only one card can
+    // be revealed at a time, and so scrolling / mode changes can close it.
+    var revealedCardId by remember { mutableStateOf<String?>(null) }
     val isSyncing = syncState is SyncUiState.Loading
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -279,7 +280,14 @@ internal fun BookmarkFeedScreen(
         onRefresh = { viewModel.syncBookmarks(fetchNextPage = false) },
         modifier = Modifier.fillMaxSize()
     ) {
+        val listState = rememberLazyListState()
+        // Scrolling closes any revealed Delete dock — a destructive action should never
+        // ride off-screen attached to a card the user is no longer looking at.
+        LaunchedEffect(listState.isScrollInProgress) {
+            if (listState.isScrollInProgress) revealedCardId = null
+        }
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
@@ -741,8 +749,27 @@ internal fun BookmarkFeedScreen(
             }
         }
 
-        // 0.5 LOGIN SUCCESS BANNER
-        if (!loginSuccessMessage.isNullOrBlank()) {
+        // ── CONSOLIDATED STATUS SLOT ──
+        // The transient banners below (login / sync / AI error) used to be independent items
+        // that could stack three-deep between the header and the first card. A single priority
+        // now picks at most one: hard failures first, then progress, then confirmations.
+        // (BYOK setup, active Space and active filters are persistent/contextual, not
+        // transient status, so they keep their own slots.)
+        val globalAnalysisError = (analysisState as? AnalysisUiState.Error)?.takeIf {
+            it.bookmarkId == null || bookmarks.none { b -> b.id == it.bookmarkId }
+        }
+        val statusSlot: Int = when {
+            syncState is SyncUiState.Error -> 0
+            globalAnalysisError != null -> 1
+            syncState is SyncUiState.RateLimited -> 2
+            syncState is SyncUiState.Loading -> 3
+            syncState is SyncUiState.Success -> 4
+            !loginSuccessMessage.isNullOrBlank() -> 5
+            else -> -1
+        }
+
+        // 0.5 LOGIN SUCCESS BANNER (lowest priority — suppressed while any sync/AI status is live)
+        if (statusSlot == 5) {
             item {
                 Box(
                     modifier = Modifier
@@ -756,7 +783,7 @@ internal fun BookmarkFeedScreen(
                     ) {
                         Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         Text(
-                            loginSuccessMessage,
+                            text = loginSuccessMessage ?: "",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.weight(1f)
@@ -769,8 +796,9 @@ internal fun BookmarkFeedScreen(
             }
         }
 
-        // 1. SYNC STATUS BANNER
-        item {
+        // 1. SYNC STATUS BANNER (one of the mutually-exclusive status-slot variants)
+        if (statusSlot in 0..4) {
+            item {
             when (val state = syncState) {
                 is SyncUiState.Loading -> {
                     Box(
@@ -881,16 +909,15 @@ internal fun BookmarkFeedScreen(
                 }
                 else -> {}
             }
+            }
         }
 
-        // 2. AI ANALYSIS ERROR BANNER (only when the failed card isn't visible in the list)
-        if (analysisState is AnalysisUiState.Error) {
-            val errorState = analysisState as AnalysisUiState.Error
-            val showGlobalBanner = errorState.bookmarkId == null ||
-                bookmarks.none { it.id == errorState.bookmarkId }
-            if (showGlobalBanner) {
+        // 2. AI ANALYSIS ERROR BANNER (only when the failed card isn't visible in the list;
+        // gated by the status slot so it can never stack with a sync banner)
+        if (statusSlot == 1) {
+            // Non-null here: statusSlot == 1 requires globalAnalysisError != null.
+            val errorMsg = globalAnalysisError!!.error
             item {
-                val errorMsg = errorState.error
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -926,7 +953,6 @@ internal fun BookmarkFeedScreen(
                         }
                     }
                 }
-            }
             }
         }
 
@@ -1021,43 +1047,28 @@ internal fun BookmarkFeedScreen(
                             onCreateChronosFlowTask = { viewModel.createChronosFlowTask(item) },
                         )
                     }
-                    // Swipe-to-triage: left = delete (with Undo), right = toggle read-later.
+                    // Swipe-to-triage: a left swipe now only REVEALS a pinned Delete dock (tap
+                    // to arm, tap again to confirm — a swipe alone can no longer delete), and
+                    // a committed right swipe toggles read-later (reversible, non-destructive).
                     // Disabled while multi-selecting or reordering so gestures don't collide.
                     val swipeEnabled = selectedIds.isEmpty() && !isReorderMode
-                    val dismissState = rememberSwipeToDismissBoxState(
-                        confirmValueChange = { value ->
-                            when (value) {
-                                SwipeToDismissBoxValue.EndToStart -> { deleteWithUndo(listOf(item)); true }
-                                SwipeToDismissBoxValue.StartToEnd -> { viewModel.toggleSavedForLater(item); false }
-                                SwipeToDismissBoxValue.Settled -> false
+                    SwipeRevealActions(
+                        revealed = swipeEnabled && revealedCardId == item.id,
+                        onRevealChange = { open ->
+                            revealedCardId = when {
+                                open -> item.id
+                                revealedCardId == item.id -> null
+                                else -> revealedCardId
                             }
-                        }
-                    )
-                    SwipeToDismissBox(
-                        state = dismissState,
-                        enableDismissFromStartToEnd = swipeEnabled,
-                        enableDismissFromEndToStart = swipeEnabled,
-                        backgroundContent = {
-                            val toEnd = dismissState.targetValue == SwipeToDismissBoxValue.StartToEnd
-                            val bg = if (toEnd) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .background(bg.copy(alpha = 0.16f))
-                                    .padding(horizontal = 24.dp),
-                                contentAlignment = if (toEnd) Alignment.CenterStart else Alignment.CenterEnd
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Icon(if (toEnd) Icons.Default.WatchLater else Icons.Default.Delete, contentDescription = null, tint = bg)
-                                    Text(
-                                        if (toEnd) "Read later" else "Delete",
-                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                                        color = bg
-                                    )
-                                }
-                            }
-                        }
+                        },
+                        onDelete = {
+                            revealedCardId = null
+                            deleteWithUndo(listOf(item))
+                        },
+                        onReadLater = { viewModel.toggleSavedForLater(item) },
+                        readLaterActive = item.isSavedForLater,
+                        gesturesEnabled = swipeEnabled,
+                        deleteTestTag = "swipe_delete_${item.id}"
                     ) {
                         CurioPostCard(
                             bookmark = item,
@@ -1101,7 +1112,61 @@ internal fun BookmarkFeedScreen(
     SnackbarHost(
         hostState = snackbarHostState,
         modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
-    )
+    ) { data ->
+        // Custom delete/undo snackbar — the default M3 snackbar's plain text button is too
+        // easy to miss when it's the ONLY thing standing between the user and a permanent
+        // (cloud-mirrored) delete. Error-toned icon + filled UNDO pill make recovery obvious.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 8.dp)
+                .testTag("delete_undo_snackbar"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(15.dp))
+            }
+            Text(
+                text = data.visuals.message,
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            data.visuals.actionLabel?.let { label ->
+                Text(
+                    text = label.uppercase(),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                    color = MaterialTheme.colorScheme.onError,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.error)
+                        .pressBounce { data.performAction() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                        .testTag("undo_delete_button")
+                )
+            }
+            if (data.visuals.withDismissAction) {
+                Box(
+                    modifier = Modifier
+                        .minTouchTarget(40.dp)
+                        .clip(CircleShape)
+                        .pressBounce { data.dismiss() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+    }
 
     // Floating bulk operations action bar
     if (selectedIds.isNotEmpty()) {

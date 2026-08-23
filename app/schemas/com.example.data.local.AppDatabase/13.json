@@ -1,0 +1,446 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 13,
+    "identityHash": "80ba0039ce5e042e2a82fa5dc7167e8c",
+    "entities": [
+      {
+        "tableName": "bookmarks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `text` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `userId` TEXT NOT NULL, `title` TEXT, `url` TEXT, `summary` TEXT, `tags` TEXT, `category` TEXT, `imageUrl` TEXT, `ocrText` TEXT, `isOcrScheduled` INTEGER NOT NULL, `isAnalyzed` INTEGER NOT NULL, `sourceType` TEXT, `sourceId` TEXT, `sourceTitle` TEXT, `sourceAuthors` TEXT, `sourceAbstract` TEXT, `sourceExtra` TEXT, `referenceCount` INTEGER NOT NULL, `entities` TEXT, `isDeepAnalyzed` INTEGER NOT NULL, `deepSummary` TEXT, `embedding` BLOB, `isFavorite` INTEGER NOT NULL, `isSavedForLater` INTEGER NOT NULL, `authorName` TEXT, `authorUsername` TEXT, `imageAltText` TEXT, `spaceId` TEXT, `notes` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "text",
+            "columnName": "text",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "summary",
+            "columnName": "summary",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "tags",
+            "columnName": "tags",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "imageUrl",
+            "columnName": "imageUrl",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ocrText",
+            "columnName": "ocrText",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isOcrScheduled",
+            "columnName": "isOcrScheduled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isAnalyzed",
+            "columnName": "isAnalyzed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceType",
+            "columnName": "sourceType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceId",
+            "columnName": "sourceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceTitle",
+            "columnName": "sourceTitle",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceAuthors",
+            "columnName": "sourceAuthors",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceAbstract",
+            "columnName": "sourceAbstract",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceExtra",
+            "columnName": "sourceExtra",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "referenceCount",
+            "columnName": "referenceCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entities",
+            "columnName": "entities",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isDeepAnalyzed",
+            "columnName": "isDeepAnalyzed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deepSummary",
+            "columnName": "deepSummary",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "embedding",
+            "columnName": "embedding",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "isFavorite",
+            "columnName": "isFavorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isSavedForLater",
+            "columnName": "isSavedForLater",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorName",
+            "columnName": "authorName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "authorUsername",
+            "columnName": "authorUsername",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "imageAltText",
+            "columnName": "imageAltText",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "spaceId",
+            "columnName": "spaceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_bookmarks_userId_createdAt",
+            "unique": false,
+            "columnNames": [
+              "userId",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_userId_createdAt` ON `${TABLE_NAME}` (`userId`, `createdAt`)"
+          },
+          {
+            "name": "index_bookmarks_userId_sourceId",
+            "unique": false,
+            "columnNames": [
+              "userId",
+              "sourceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_userId_sourceId` ON `${TABLE_NAME}` (`userId`, `sourceId`)"
+          },
+          {
+            "name": "index_bookmarks_spaceId",
+            "unique": false,
+            "columnNames": [
+              "spaceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_spaceId` ON `${TABLE_NAME}` (`spaceId`)"
+          },
+          {
+            "name": "index_bookmarks_userId_category",
+            "unique": false,
+            "columnNames": [
+              "userId",
+              "category"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_userId_category` ON `${TABLE_NAME}` (`userId`, `category`)"
+          },
+          {
+            "name": "index_bookmarks_isAnalyzed",
+            "unique": false,
+            "columnNames": [
+              "isAnalyzed"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_isAnalyzed` ON `${TABLE_NAME}` (`isAnalyzed`)"
+          },
+          {
+            "name": "index_bookmarks_userId_isAnalyzed",
+            "unique": false,
+            "columnNames": [
+              "userId",
+              "isAnalyzed"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_bookmarks_userId_isAnalyzed` ON `${TABLE_NAME}` (`userId`, `isAnalyzed`)"
+          }
+        ]
+      },
+      {
+        "tableName": "spaces",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `name` TEXT NOT NULL, `colorValue` INTEGER NOT NULL, `iconKey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `description` TEXT NOT NULL, `isPinned` INTEGER NOT NULL, `sortIndex` INTEGER NOT NULL, `rulesJson` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorValue",
+            "columnName": "colorValue",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "iconKey",
+            "columnName": "iconKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPinned",
+            "columnName": "isPinned",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortIndex",
+            "columnName": "sortIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rulesJson",
+            "columnName": "rulesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_spaces_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_spaces_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "semantic_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `queryText` TEXT NOT NULL, `queryHash` TEXT NOT NULL, `embedding` BLOB, `response` TEXT NOT NULL, `modelTier` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `lastAccessAt` INTEGER NOT NULL, `expiresAt` INTEGER NOT NULL, `hitCount` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queryText",
+            "columnName": "queryText",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queryHash",
+            "columnName": "queryHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "embedding",
+            "columnName": "embedding",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "response",
+            "columnName": "response",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelTier",
+            "columnName": "modelTier",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastAccessAt",
+            "columnName": "lastAccessAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expiresAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hitCount",
+            "columnName": "hitCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_semantic_cache_userId_queryHash",
+            "unique": false,
+            "columnNames": [
+              "userId",
+              "queryHash"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_semantic_cache_userId_queryHash` ON `${TABLE_NAME}` (`userId`, `queryHash`)"
+          },
+          {
+            "name": "index_semantic_cache_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_semantic_cache_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_semantic_cache_expiresAt",
+            "unique": false,
+            "columnNames": [
+              "expiresAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_semantic_cache_expiresAt` ON `${TABLE_NAME}` (`expiresAt`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '80ba0039ce5e042e2a82fa5dc7167e8c')"
+    ]
+  }
+}

@@ -1007,7 +1007,10 @@ final class BookmarkViewModel {
                 await self.repository.updateOcrContent(id: bookmarkId, ocrText: text, isOcrScheduled: false)
                 self.analysisState = .success(bookmarkId: bookmarkId)
             } catch is CancellationError {
-                // Residual Processing is cleared by the guard below.
+                // The scheduled flag was persisted BEFORE Vision ran; on cancel nothing else
+                // ever clears it, so the card would show "OCR pending" forever. Reset it —
+                // harmless during teardown (SwiftData writes are best-effort there).
+                await self.repository.updateOcrContent(id: bookmarkId, ocrText: nil, isOcrScheduled: false)
             } catch {
                 Self.logger.error("OCR processing failed for bookmark \(bookmarkId, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 self.analysisState = .error(message: humanReadableError(error, context: .ai), bookmarkId: bookmarkId)

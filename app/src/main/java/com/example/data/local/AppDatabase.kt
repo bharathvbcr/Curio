@@ -10,7 +10,7 @@ import com.example.BuildConfig
 
 @Database(
     entities = [BookmarkEntity::class, SpaceEntity::class, SemanticCacheEntity::class],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -120,6 +120,42 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v12 → v13: adds the last-local-write stamp `updatedAt` to `bookmarks`, maintained by
+         * two table triggers so every write path is stamped without touching any DAO query.
+         * SQLite leaves recursive triggers OFF by default, so the trigger's own UPDATE does not
+         * re-fire it (and Room ignores triggers during schema validation). INSERT-OR-REPLACE
+         * upserts delete+insert, hence the companion AFTER INSERT trigger. Existing rows start
+         * at 0 ("never locally written since this migration").
+         */
+        internal val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bookmarks ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS bookmarks_touch_updated_at_update
+                    AFTER UPDATE ON bookmarks
+                    BEGIN
+                        UPDATE bookmarks SET updatedAt =
+                            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+                        WHERE id = NEW.id;
+                    END
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS bookmarks_touch_updated_at_insert
+                    AFTER INSERT ON bookmarks
+                    BEGIN
+                        UPDATE bookmarks SET updatedAt =
+                            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+                        WHERE id = NEW.id;
+                    END
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -129,7 +165,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     .addMigrations(
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                        MIGRATION_10_11, MIGRATION_11_12
+                        MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13
                     )
                     .apply {
                         // Destructive fallback wipes the user's entire library on any schema

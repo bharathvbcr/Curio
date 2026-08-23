@@ -22,7 +22,10 @@ class SourceResolver(
     private val arxivClient: ArxivClient,
     private val githubApi: GithubApi,
     private val huggingFaceApi: HuggingFaceApi,
-    private val crossrefClient: CrossrefClient
+    private val crossrefClient: CrossrefClient,
+    /** Ceiling for server-supplied Retry-After delays; a hostile header used to park the caller for hours. */
+    private val retryAfterCeilingMs: Long = 30_000L,
+    private val retryDelayBaseMs: Long = 1_000L
 ) {
 
     private suspend fun <T> withRetry(maxAttempts: Int = 3, delayMs: Long = 1000, block: suspend () -> T?): T? {
@@ -31,10 +34,18 @@ class SourceResolver(
                 return block()
             } catch (e: retrofit2.HttpException) {
                 if (e.code() == 429 || e.code() == 503) {
-                    val retryAfterMs = (e.response()?.headers()?.get("Retry-After")?.toLongOrNull() ?: (1L shl attempt)) * 1000L
-                    kotlinx.coroutines.delay(retryAfterMs)
+                    // Honour Retry-After but cap it — the value is server-controlled, and an
+                    // unbounded sleep inside resolve() freezes enrichment for hours.
+                    val serverWaitMs = (e.response()?.headers()?.get("Retry-After")?.toLongOrNull()
+                        ?: (1L shl attempt)) * 1000L
+                    kotlinx.coroutines.delay(serverWaitMs.coerceIn(0L, retryAfterCeilingMs))
                 } else if (e.code() in 400..499) {
                     return null  // client errors: don't retry
+                } else {
+                    // Other 5xx (500/502/504): previously fell through with ZERO delay and
+                    // retried immediately — rapid-fire hits against a struggling endpoint.
+                    if (attempt == maxAttempts - 1) return null
+                    kotlinx.coroutines.delay((delayMs * (1L shl attempt)).coerceAtMost(retryAfterCeilingMs))
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

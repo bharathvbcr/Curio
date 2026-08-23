@@ -61,11 +61,30 @@ class RagCompressor(
         return selected.map { scorable[it].first } + unscorable
     }
 
-    private fun estimateTokens(b: Bookmark): Int {
-        val chars = (b.title?.length ?: 0) +
-            (b.summary?.length ?: 0) +
-            (b.deepSummary?.length ?: 0) +
-            b.text.length
-        return (chars / charsPerToken).coerceAtLeast(1)
+    /**
+     * Rough token estimate. The chars-per-token heuristic is calibrated on Latin text (~4
+     * chars/token); CJK text runs at roughly 1 char/token in modern tokenizers, so counting
+     * every ideograph as [charsPerToken] "characters" keeps compressed context inside the
+     * real model budget for Chinese/Japanese libraries instead of blowing it ~4×.
+     */
+    internal fun estimateTokens(b: Bookmark): Int {
+        var effectiveChars = 0
+        (b.title ?: "") .plus(b.summary ?: "").plus(b.deepSummary ?: "").plus(b.text)
+            .forEach { c ->
+                effectiveChars += if (isCjk(c)) charsPerToken else 1
+            }
+        return (effectiveChars / charsPerToken).coerceAtLeast(1)
+    }
+
+    private fun isCjk(c: Char): Boolean {
+        val block = Character.UnicodeBlock.of(c) ?: return false
+        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
+            block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
+            block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B ||
+            block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
+            block == Character.UnicodeBlock.HIRAGANA ||
+            block == Character.UnicodeBlock.KATAKANA ||
+            block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
+            block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
     }
 }

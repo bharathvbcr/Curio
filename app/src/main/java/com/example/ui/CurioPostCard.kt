@@ -100,7 +100,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -220,6 +222,7 @@ internal fun CurioPostCard(
     suggestedSpace: Space? = null
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     var isExpanded by remember { mutableStateOf(false) }
     var showOptions by remember { mutableStateOf(false) }
     var showSpacePicker by remember { mutableStateOf(false) }
@@ -320,36 +323,40 @@ internal fun CurioPostCard(
                 horizontalArrangement = Arrangement.spacedBy(11.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                // Selection ring (always present for accessibility/tests). The 20dp ring is the
+                // Selection ring — only rendered in selection mode (it used to sit on every card
+                // at low alpha: pure clutter outside multi-select). Enter selection via the card's
+                // ⋯ sheet → Select; rings then animate in on all cards. The 20dp ring is the
                 // visual; the tap area is expanded to the 48dp minimum and exposes proper
                 // checkbox role + checked/unchecked state so TalkBack announces it correctly.
-                Box(
-                    modifier = Modifier
-                        .minTouchTarget()
-                        .semantics { stateDescription = if (isSelected) "Selected" else "Not selected" }
-                        .toggleable(
-                            value = isSelected,
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            role = Role.Checkbox,
-                            onValueChange = { onToggleSelect() }
-                        )
-                        .testTag("bookmark_select_checkbox_${bookmark.id}"),
-                    contentAlignment = Alignment.Center
-                ) {
+                AnimatedVisibility(visible = inSelectionMode) {
                     Box(
                         modifier = Modifier
-                            .size(20.dp)
-                            .bounceScale(isSelected)
-                            .border(
-                                width = 1.5.dp,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = if (inSelectionMode) 0.4f else 0.18f),
-                                shape = CircleShape
+                            .minTouchTarget()
+                            .semantics { stateDescription = if (isSelected) "Selected" else "Not selected" }
+                            .toggleable(
+                                value = isSelected,
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                role = Role.Checkbox,
+                                onValueChange = { onToggleSelect() }
                             )
-                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape),
+                            .testTag("bookmark_select_checkbox_${bookmark.id}"),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isSelected) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .bounceScale(isSelected)
+                                .border(
+                                    width = 1.5.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                    shape = CircleShape
+                                )
+                                .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                        }
                     }
                 }
 
@@ -671,19 +678,19 @@ internal fun CurioPostCard(
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    IconButton(onClick = { actions.onToggleFavorite() }, modifier = Modifier.size(48.dp).testTag("favorite_button_${bookmark.id}")) {
+                    IconButton(onClick = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); actions.onToggleFavorite() }, modifier = Modifier.size(48.dp).testTag("favorite_button_${bookmark.id}")) {
                         Icon(
                             imageVector = if (bookmark.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                             contentDescription = if (bookmark.isFavorite) "Unfavorite" else "Favorite",
-                            modifier = Modifier.size(16.dp).bounceScale(bookmark.isFavorite),
+                            modifier = Modifier.size(20.dp).bounceScale(bookmark.isFavorite),
                             tint = if (bookmark.isFavorite) CurioColors.Favorite else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                         )
                     }
-                    IconButton(onClick = { actions.onToggleSavedForLater() }, modifier = Modifier.size(48.dp).testTag("readlater_button_${bookmark.id}")) {
+                    IconButton(onClick = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); actions.onToggleSavedForLater() }, modifier = Modifier.size(48.dp).testTag("readlater_button_${bookmark.id}")) {
                         Icon(
                             imageVector = Icons.Filled.WatchLater,
                             contentDescription = if (bookmark.isSavedForLater) "Remove from read later" else "Save for later",
-                            modifier = Modifier.size(16.dp).bounceScale(bookmark.isSavedForLater),
+                            modifier = Modifier.size(20.dp).bounceScale(bookmark.isSavedForLater),
                             tint = if (bookmark.isSavedForLater) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                         )
                     }

@@ -18,6 +18,10 @@ class FirebaseSyncManager(private val context: Context) {
 
     companion object {
         @Volatile private var persistenceConfigured = false
+
+        /** Firestore WriteBatch limit is 500; page size matches for symmetry. */
+        private const val PULL_PAGE_SIZE = 500L
+        private const val MAX_PULL_PAGES = 20
     }
 
     private var firestoreInstance: FirebaseFirestore? = null
@@ -160,66 +164,94 @@ class FirebaseSyncManager(private val context: Context) {
         }
     }
 
+    /** One pull result: rows plus each document's server-side modification stamp (for LWW). */
+    data class CloudPullSnapshot(
+        val bookmarks: List<Bookmark>,
+        /** doc id → Firestore `updatedAt` epoch ms; entries without a timestamp are absent. */
+        val updatedAtById: Map<String, Long>
+    )
+
     /**
      * Pull all bookmarks associated with a specific user from Firebase Firestore.
+     *
+     * Cursor-paginated (`orderBy __name__` + `startAfter`) so a large cloud subtree streams in
+     * fixed-size pages instead of one unbounded response held fully in memory, and hard-capped
+     * at [MAX_PULL_DOCS] so even a runaway subtree cannot balloon past a known bound.
      */
-    suspend fun pullBookmarks(userId: String): List<Bookmark> {
+    suspend fun pullBookmarks(userId: String): CloudPullSnapshot {
         val authUid = ensureAuthenticated() ?: run {
             Log.w("FirebaseSyncManager", "Skipping Firestore op: not authenticated")
-            return emptyList()
+            return CloudPullSnapshot(emptyList(), emptyMap())
         }
-        val db = firestoreInstance ?: return emptyList()
+        val db = firestoreInstance ?: return CloudPullSnapshot(emptyList(), emptyMap())
         return try {
-            val querySnapshot = userBookmarks(db, authUid)
-                .get()
-                .awaitTask()
+            val bookmarks = mutableListOf<Bookmark>()
+            val updatedStampById = mutableMapOf<String, Long>()
+            var lastDoc: com.google.firebase.firestore.DocumentSnapshot? = null
+            var pages = 0
+            do {
+                var query = userBookmarks(db, authUid)
+                    .orderBy(com.google.firebase.firestore.FieldPath.documentId())
+                    .limit(PULL_PAGE_SIZE)
+                if (lastDoc != null) query = query.startAfter(lastDoc)
+                val querySnapshot = query.get().awaitTask()
+                val docs = querySnapshot.documents
 
-            querySnapshot.documents.mapNotNull { doc ->
-                val id = doc.getString("id") ?: return@mapNotNull null
-                val text = doc.getString("text") ?: ""
-                val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
-                // TODO: last-writer-wins conflict resolution — read cloudUpdatedAt here and
-                //  compare against the local copy's createdAt as a proxy once BookmarkEntity
-                //  gains an `updatedAt` column. For now, the repository merge in
-                //  BookmarkRepositoryImpl prefers the local copy's enriched fields.
-                val cloudUpdatedAtMs: Long? = doc.getTimestamp("updatedAt")?.toDate()?.time
-                Log.v("FirebaseSyncManager", "doc=$id cloudUpdatedAt=$cloudUpdatedAtMs")
-                val title = doc.getString("title")
-                val url = doc.getString("url")
-                val summary = doc.getString("summary")
-                val tagCsv = doc.getString("tags") ?: ""
-                val tags = tagCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                val category = doc.getString("category")
-                val imageUrl = doc.getString("imageUrl")
-                val ocrText = doc.getString("ocrText")
-                val isOcrScheduled = doc.getBoolean("isOcrScheduled") ?: false
-                val isAnalyzed = doc.getBoolean("isAnalyzed") ?: false
-
-                val srcTypeName = doc.getString("sourceType")
-                val srcType = srcTypeName?.let {
-                    runCatching { com.example.domain.model.SourceType.valueOf(it) }.getOrNull()
+                for (doc in docs) {
+                    mapDocument(userId, doc)?.let { bookmark ->
+                        bookmarks += bookmark
+                        doc.getTimestamp("updatedAt")?.toDate()?.time?.let {
+                            updatedStampById[bookmark.id] = it
+                        }
+                    }
                 }
-                Bookmark(
-                    id = id, text = text, createdAt = createdAt, userId = userId,
-                    title = title, url = url, summary = summary, tags = tags,
-                    category = category, imageUrl = imageUrl, ocrText = ocrText,
-                    isOcrScheduled = isOcrScheduled, isAnalyzed = isAnalyzed,
-                    sourceType = srcType,
-                    sourceId = doc.getString("sourceId"),
-                    sourceTitle = doc.getString("sourceTitle"),
-                    sourceAuthors = doc.getString("sourceAuthors"),
-                    sourceAbstract = doc.getString("sourceAbstract"),
-                    sourceExtra = doc.getString("sourceExtra"),
-                    referenceCount = doc.getLong("referenceCount")?.toInt() ?: 1,
-                    entities = doc.getString("entities"),
-                    isDeepAnalyzed = doc.getBoolean("isDeepAnalyzed") ?: false,
-                    deepSummary = doc.getString("deepSummary")
-                )
-            }
+                lastDoc = docs.lastOrNull()
+                pages++
+            } while (lastDoc != null && docs.size.toLong() == PULL_PAGE_SIZE && pages < MAX_PULL_PAGES)
+
+            CloudPullSnapshot(bookmarks, updatedStampById)
         } catch (e: Exception) {
             Log.e("FirebaseSyncManager", "Error pulling user $userId bookmarks from Firestore: ${e.message}")
-            emptyList()
+            CloudPullSnapshot(emptyList(), emptyMap())
         }
+    }
+
+    /** Maps one Firestore document to a domain Bookmark; null when the doc lacks an id. */
+    private fun mapDocument(userId: String, doc: com.google.firebase.firestore.DocumentSnapshot): Bookmark? {
+        val id = doc.getString("id") ?: return null
+        val text = doc.getString("text") ?: ""
+        val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+        val title = doc.getString("title")
+        val url = doc.getString("url")
+        val summary = doc.getString("summary")
+        // TagCodec handles both the legacy CSV rows and current JSON-array writes.
+        val tags = com.example.data.local.TagCodec.decode(doc.getString("tags"))
+        val category = doc.getString("category")
+        val imageUrl = doc.getString("imageUrl")
+        val ocrText = doc.getString("ocrText")
+        val isOcrScheduled = doc.getBoolean("isOcrScheduled") ?: false
+        val isAnalyzed = doc.getBoolean("isAnalyzed") ?: false
+
+        val srcTypeName = doc.getString("sourceType")
+        val srcType = srcTypeName?.let {
+            runCatching { com.example.domain.model.SourceType.valueOf(it) }.getOrNull()
+        }
+        return Bookmark(
+            id = id, text = text, createdAt = createdAt, userId = userId,
+            title = title, url = url, summary = summary, tags = tags,
+            category = category, imageUrl = imageUrl, ocrText = ocrText,
+            isOcrScheduled = isOcrScheduled, isAnalyzed = isAnalyzed,
+            sourceType = srcType,
+            sourceId = doc.getString("sourceId"),
+            sourceTitle = doc.getString("sourceTitle"),
+            sourceAuthors = doc.getString("sourceAuthors"),
+            sourceAbstract = doc.getString("sourceAbstract"),
+            sourceExtra = doc.getString("sourceExtra"),
+            referenceCount = doc.getLong("referenceCount")?.toInt() ?: 1,
+            entities = doc.getString("entities"),
+            isDeepAnalyzed = doc.getBoolean("isDeepAnalyzed") ?: false,
+            deepSummary = doc.getString("deepSummary")
+        )
     }
 
     /**

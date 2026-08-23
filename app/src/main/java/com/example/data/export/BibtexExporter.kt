@@ -110,8 +110,20 @@ object BibtexExporter {
         }
     }
 
-    fun toBibtexList(bookmarks: List<Bookmark>): String =
-        bookmarks.mapNotNull { toBibtex(it) }.joinToString("\n\n")
+    fun toBibtexList(bookmarks: List<Bookmark>): String {
+        // BibTeX keys must be unique within a .bib file; two bookmarks sharing first author +
+        // year + first title word used to emit colliding keys and break LaTeX/Zotero imports.
+        val seen = HashMap<String, Int>()
+        return bookmarks.mapNotNull { bm ->
+            val entry = toBibtex(bm) ?: return@mapNotNull null
+            val keyMatch = Regex("^(@\\w+)\\{([^,]+),").find(entry) ?: return@mapNotNull entry
+            val (entryType, baseKey) = keyMatch.destructured
+            val occurrence = seen[baseKey] ?: 0
+            seen[baseKey] = occurrence + 1
+            if (occurrence == 0) entry
+            else entry.replaceFirst(keyMatch.value, "$entryType{$baseKey${'a' + occurrence - 1},")
+        }.joinToString("\n\n")
+    }
 
     fun toRisList(bookmarks: List<Bookmark>): String =
         bookmarks.mapNotNull { toRis(it) }.joinToString("\n")
@@ -245,9 +257,19 @@ object BibtexExporter {
         return authorsStr.split(",").joinToString(" and ") { it.trim() }
     }
 
-    private fun escapeLatex(text: String): String = text
-        .replace("&", "\\&").replace("%", "\\%").replace("\$", "\\\$")
-        .replace("#", "\\#").replace("_", "\\_")
+    private fun escapeLatex(text: String): String {
+        // Backslash cannot simply be replaced first or last: doing it first lets later
+        // escapes corrupt the \textbackslash{} marker's braces; doing it last double-escapes
+        // the very escapes just added. A sentinel keeps each pass independent — it must
+        // contain ONLY control characters, since every printable special is itself rewritten.
+        val backslashSentinel = "\u0000\u0001\u0002"
+        return text
+            .replace("\\", backslashSentinel)
+            .replace("{", "\\{").replace("}", "\\}")
+            .replace("&", "\\&").replace("%", "\\%").replace("$", "\\$")
+            .replace("#", "\\#").replace("_", "\\_")
+            .replace(backslashSentinel, "\\textbackslash{}")
+    }
 
     private fun extractYear(bookmark: Bookmark): String {
         val fromExtra = bookmark.sourceExtra?.let {
@@ -255,7 +277,13 @@ object BibtexExporter {
         }
         if (fromExtra != null) return fromExtra
         val epochMs = bookmark.createdAt
-        val cal = java.util.Calendar.getInstance()
+        if (epochMs <= 0L) {
+            // Legacy rows carry a 0 sentinel from failed timestamp parses — citing "1970"
+            // is worse than the current year; use UTC so the year never shifts by timezone.
+            return java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+                .get(java.util.Calendar.YEAR).toString()
+        }
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
         cal.timeInMillis = if (epochMs > 1_000_000_000_000L) epochMs else epochMs * 1000
         return cal.get(java.util.Calendar.YEAR).toString()
     }

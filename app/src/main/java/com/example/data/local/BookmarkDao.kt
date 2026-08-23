@@ -19,16 +19,18 @@ interface BookmarkDao {
     /**
      * Full-text-ish search across raw text, OCR text, summary and title.
      * `COLLATE NOCASE` makes matching case-insensitive (ASCII), so "attention" also finds
-     * "Attention" — SQLite's LIKE is otherwise case-sensitive for these columns.
+     * "Attention" — SQLite's LIKE is otherwise case-sensitive for these columns. The repository
+     * escapes `%`, `_` and `\` in the query and the `ESCAPE '\'` clause here makes those
+     * escapes literal — otherwise user input like "100%" silently matches everything.
      */
     @Query(
         """
         SELECT * FROM bookmarks
         WHERE userId = :userId AND (
-            text LIKE '%' || :query || '%' COLLATE NOCASE OR
-            ocrText LIKE '%' || :query || '%' COLLATE NOCASE OR
-            summary LIKE '%' || :query || '%' COLLATE NOCASE OR
-            title LIKE '%' || :query || '%' COLLATE NOCASE
+            text LIKE '%' || :query || '%' COLLATE NOCASE ESCAPE '\' OR
+            ocrText LIKE '%' || :query || '%' COLLATE NOCASE ESCAPE '\' OR
+            summary LIKE '%' || :query || '%' COLLATE NOCASE ESCAPE '\' OR
+            title LIKE '%' || :query || '%' COLLATE NOCASE ESCAPE '\'
         )
         ORDER BY createdAt DESC
         """
@@ -149,9 +151,15 @@ interface BookmarkDao {
      * Delegates to [updateEmbedding] inside a single [@Transaction] — same O(1) WAL flush
      * guarantee as [updateEmbeddings]. Callers that collect ids and embeddings as separate
      * lists (e.g. [EmbeddingIndexWorker]) can use this directly.
+     *
+     * Fails loudly on length mismatch: zip() used to silently truncate, dropping embeddings
+     * (or ids) without any error — an invisible data-loss path during index rebuilds.
      */
     @Transaction
     suspend fun batchUpdateEmbeddings(ids: List<String>, embeddings: List<ByteArray>) {
+        require(ids.size == embeddings.size) {
+            "batchUpdateEmbeddings: ${ids.size} ids vs ${embeddings.size} embeddings"
+        }
         ids.zip(embeddings).forEach { (id, emb) -> updateEmbedding(id, emb) }
     }
 

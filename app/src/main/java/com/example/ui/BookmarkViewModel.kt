@@ -159,7 +159,7 @@ class BookmarkViewModel(
             // which must not surface as a failure. Reading the state also gives the real error text.
             when (val s = embeddingModelManager.state.value) {
                 is com.example.data.embedding.EmbeddingModelManager.State.Ready ->
-                    _syncState.value = SyncUiState.Success("On-device model ready")
+                    setTransientSyncState(SyncUiState.Success("On-device model ready"))
                 is com.example.data.embedding.EmbeddingModelManager.State.Failed ->
                     _syncState.value = SyncUiState.Error(s.message)
                 else -> { /* still downloading (elsewhere) or no-op — leave the banner untouched */ }
@@ -417,9 +417,11 @@ class BookmarkViewModel(
     }
 
     private fun reportSpaceRulesResult(count: Int, spaceName: String) {
-        _syncState.value = SyncUiState.Success(
-            if (count == 0) "No new matches for \"$spaceName\""
-            else "Filed $count bookmark${if (count == 1) "" else "s"} into \"$spaceName\""
+        setTransientSyncState(
+            SyncUiState.Success(
+                if (count == 0) "No new matches for \"$spaceName\""
+                else "Filed $count bookmark${if (count == 1) "" else "s"} into \"$spaceName\""
+            )
         )
     }
 
@@ -492,7 +494,7 @@ class BookmarkViewModel(
             _spaceSuggestions.value = result.suggestions.associateBy { it.bookmarkId }
             if (announce) {
                 result.announceMessage()?.let { msg ->
-                    _syncState.value = SyncUiState.Success(msg)
+                    setTransientSyncState(SyncUiState.Success(msg))
                 }
             }
         }
@@ -901,7 +903,9 @@ class BookmarkViewModel(
             curioActivityController.taskStarted(CurioTask.SYNC)
             repository.syncBookmarks(uid, fetchNextPage)
                 .onSuccess {
-                    _syncState.value = SyncUiState.Success("Synchronized successfully")
+                    // Transient: a sticky Success outranked every lower status slot and kept
+                    // global AI-error banners suppressed indefinitely after any sync.
+                    setTransientSyncState(SyncUiState.Success("Synchronized successfully"))
                     resolveNewSources()
                     scheduleOrganizeAfterEmbed()
                 }
@@ -1062,7 +1066,7 @@ class BookmarkViewModel(
             val unresolved = rawBookmarks.value.filter { it.sourceType == null && it.url != null }
             val batch = unresolved.take(10)
             if (batch.isEmpty()) {
-                _syncState.value = SyncUiState.Success("No unresolved sources — nothing to fetch")
+                setTransientSyncState(SyncUiState.Success("No unresolved sources — nothing to fetch"))
                 return@launch
             }
             var resolved = 0
@@ -1094,8 +1098,10 @@ class BookmarkViewModel(
                     Log.w(TAG, "Source resolution failed for ${bookmark.id}", e)
                 }
             }
-            _syncState.value = SyncUiState.Success(
-                "Resolved $resolved of ${batch.size} sources" + if (failed > 0) " ($failed unresolved)" else ""
+            setTransientSyncState(
+                SyncUiState.Success(
+                    "Resolved $resolved of ${batch.size} sources" + if (failed > 0) " ($failed unresolved)" else ""
+                )
             )
         }
     }
@@ -1106,9 +1112,11 @@ class BookmarkViewModel(
             try {
                 _syncState.value = SyncUiState.Loading("Deduplicating sources…")
                 val removed = repository.deduplicateBySource(uid)
-                _syncState.value = SyncUiState.Success(
-                    if (removed > 0) "Merged $removed duplicate${if (removed == 1) "" else "s"}"
-                    else "No duplicates found"
+                setTransientSyncState(
+                    SyncUiState.Success(
+                        if (removed > 0) "Merged $removed duplicate${if (removed == 1) "" else "s"}"
+                        else "No duplicates found"
+                    )
                 )
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -1165,7 +1173,7 @@ class BookmarkViewModel(
             // (which already excludes items that have a vector), so re-runs only do outstanding work.
             val batch = repository.getAllUnembedded(uid)
             if (batch.isEmpty()) {
-                _syncState.value = SyncUiState.Success("Nothing to embed — all bookmarks already have vectors")
+                setTransientSyncState(SyncUiState.Success("Nothing to embed — all bookmarks already have vectors"))
                 return@launch
             }
             val engine = if (embeddingService.isOnDevice()) "on-device" else "xAI"
