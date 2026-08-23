@@ -57,11 +57,14 @@ android {
   }
 
   signingConfigs {
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
+    val localDebugKeystore = file("${rootDir}/debug.keystore")
+    if (localDebugKeystore.exists()) {
+      create("debugConfig") {
+        storeFile = localDebugKeystore
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
     }
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH")
@@ -71,15 +74,12 @@ android {
         storePassword = System.getenv("STORE_PASSWORD")
         keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
         keyPassword = System.getenv("KEY_PASSWORD")
-      } else {
-        val debugKs = file("${rootDir}/debug.keystore")
-        if (debugKs.exists()) {
-          logger.warn("WARNING: Release keystore not found (${resolvedKeystore.path}); using debug.keystore for local validation.")
-          storeFile = debugKs
-          storePassword = "android"
-          keyAlias = "androiddebugkey"
-          keyPassword = "android"
-        }
+      } else if (localDebugKeystore.exists()) {
+        logger.warn("WARNING: Release keystore not found (${resolvedKeystore.path}); using debug.keystore for local validation.")
+        storeFile = localDebugKeystore
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
       }
     }
   }
@@ -94,10 +94,14 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("release")
+      signingConfigs.findByName("release")?.takeIf { it.storeFile?.exists() == true }?.let {
+        signingConfig = it
+      }
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      signingConfigs.findByName("debugConfig")?.let {
+        signingConfig = it
+      }
     }
   }
   compileOptions {

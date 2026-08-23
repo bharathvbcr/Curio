@@ -31,6 +31,7 @@
 
 import UIKit
 import UniformTypeIdentifiers
+import CoreTransferable
 
 /// Receives `public.url` / `public.plain-text` shares (X app, browsers, readers, …),
 /// rebuilds the Android `subject\nbody` payload, and enqueues it for the main app.

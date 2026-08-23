@@ -52,20 +52,12 @@ jobs:
 
       - name: Run iOS Unit Tests
         run: |
+          DEVICE_NAME=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/ *\([A-F0-9-]+\).*//; s/^[[:space:]]*//')
+          echo "Testing against simulator: '$DEVICE_NAME'"
           xcodebuild test \
             -project ios/Curio.xcodeproj \
             -scheme Curio \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
-            -quiet || \
-          xcodebuild test \
-            -project ios/Curio.xcodeproj \
-            -scheme Curio \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
-            -quiet || \
-          xcodebuild test \
-            -project ios/Curio.xcodeproj \
-            -scheme Curio \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,name=${DEVICE_NAME:-iPhone 16}" \
             -quiet
 
       - name: Build iOS Release Scheme
