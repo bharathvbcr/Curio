@@ -248,11 +248,6 @@ class TokenStore(private val context: Context) {
      */
     suspend fun resolveXClientId(): String {
         getXClientId()?.let { return it }
-        // The secrets plugin injects .env values verbatim, including "ROTATE_ME"-style
-        // placeholders from a cleared .env — never send those to X as a client_id.
-        BuildConfig.CLIENT_ID
-            .takeIf { it.isNotBlank() && !it.startsWith("ROTATE") && !it.startsWith("MY_") }
-            ?.let { return it }
         return BuildConfig.X_CLIENT_ID
     }
 

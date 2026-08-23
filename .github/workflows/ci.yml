@@ -45,8 +45,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode.app
+      - name: Install XcodeGen and Generate Project
+        run: |
+          which xcodegen || brew install xcodegen
+          cd ios && xcodegen generate
 
       - name: Run iOS Unit Tests
         run: |
@@ -59,6 +61,11 @@ jobs:
             -project ios/Curio.xcodeproj \
             -scheme Curio \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -quiet || \
+          xcodebuild test \
+            -project ios/Curio.xcodeproj \
+            -scheme Curio \
+            -destination 'generic/platform=iOS Simulator' \
             -quiet
 
       - name: Build iOS Release Scheme
