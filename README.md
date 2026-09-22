@@ -4,6 +4,8 @@
 
 # Curio
 
+[![Website](https://img.shields.io/badge/website-curio.vbcr.dev-B91C1C?style=flat&logo=safari&logoColor=white)](https://curio.vbcr.dev/)
+
 **Native on-device AI bookmark assistant for Android & iOS** — OCR, primary-source resolution, rule-based Smart Spaces, and a local semantic layer with cache, RAG compression, and routing, wrapped in a frosted Liquid-Glass UI.
 
 </div>
