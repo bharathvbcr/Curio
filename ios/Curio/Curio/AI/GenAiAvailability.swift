@@ -31,7 +31,13 @@ enum FeatureStatus: String, Sendable {
 /// so the pipeline degrades to the cloud / offline-keyword backend exactly like an AICore-less Android device.
 struct GenAiAvailability: Sendable {
 
-    init() {}
+    private let probe: @Sendable () -> FeatureStatus
+
+    /// `probe` defaults to the live `SystemLanguageModel` check. Tests pass a fixed status so the
+    /// gate does not depend on whether the host has Apple Intelligence downloaded.
+    init(probe: @escaping @Sendable () -> FeatureStatus = GenAiAvailability.systemProbe) {
+        self.probe = probe
+    }
 
     /// Returns the on-device GenAI feature status.
     ///
@@ -45,8 +51,14 @@ struct GenAiAvailability: Sendable {
     /// Like the Kotlin `runCatching { … }.getOrDefault(UNAVAILABLE)`, any failure to query the model
     /// degrades to ``FeatureStatus/UNAVAILABLE`` → cloud.
     func status() -> FeatureStatus {
+        probe()
+    }
+
+    /// Live device gate. `#available(iOS 26, *)` alone is false on a native Mac target, which would
+    /// report Apple Intelligence as missing on macOS 26.
+    static func systemProbe() -> FeatureStatus {
         #if canImport(FoundationModels)
-        if #available(iOS 26, *) {
+        if #available(iOS 26, macOS 26, *) {
             switch SystemLanguageModel.default.availability {
             case .available:
                 return .AVAILABLE

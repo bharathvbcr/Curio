@@ -992,17 +992,16 @@ final class BookmarkViewModel {
 
     // MARK: - OCR
 
-    #if canImport(UIKit)
     /// Runs Vision OCR on a picked image for a bookmark, persisting the scheduled flag then the result.
-    /// Port of `processOcrForBookmark`. The Android `Bitmap` becomes a `UIImage`.
-    func processOcrForBookmark(bookmarkId: String, image: UIImage) {
+    /// Port of `processOcrForBookmark`. The Android `Bitmap` becomes image bytes.
+    func processOcrForBookmark(bookmarkId: String, imageData: Data) {
         launch { [weak self] in
             guard let self else { return }
             self.analysisState = .processing(bookmarkId: bookmarkId)
             do {
                 try Task.checkCancellation()
                 await self.repository.updateOcrContent(id: bookmarkId, ocrText: nil, isOcrScheduled: true)
-                let text = await self.ocrAnalyzer.analyze(image)
+                let text = await self.ocrAnalyzer.analyze(imageData: imageData)
                 try Task.checkCancellation()
                 await self.repository.updateOcrContent(id: bookmarkId, ocrText: text, isOcrScheduled: false)
                 self.analysisState = .success(bookmarkId: bookmarkId)
@@ -1022,7 +1021,6 @@ final class BookmarkViewModel {
             }
         }
     }
-    #endif
 
     // MARK: - AI analysis
 

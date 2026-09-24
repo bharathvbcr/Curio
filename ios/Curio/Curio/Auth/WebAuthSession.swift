@@ -1,6 +1,10 @@
 import Foundation
-import UIKit
 import AuthenticationServices
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// `ASWebAuthenticationSession` wrapper driving the X OAuth2 browser handoff. Replaces the Android
 /// Chrome Custom Tabs flow (DESIGN §"Chrome Custom Tabs (OAuth) → ASWebAuthenticationSession"; Auth
@@ -88,11 +92,17 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
 
     /// Resolves the current key window from the active foreground scene, or a placeholder anchor.
     static func defaultAnchor() -> ASPresentationAnchor {
+        #if canImport(UIKit)
         let scenes = UIApplication.shared.connectedScenes
         if let windowScene = scenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
            let keyWindow = windowScene.windows.first(where: { $0.isKeyWindow }) ?? windowScene.windows.first {
             return keyWindow
         }
         return ASPresentationAnchor()
+        #elseif canImport(AppKit)
+        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
+        #else
+        return ASPresentationAnchor()
+        #endif
     }
 }

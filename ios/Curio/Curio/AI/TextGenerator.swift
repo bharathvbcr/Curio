@@ -151,7 +151,7 @@ final class OnDeviceTextGenerator: TextGenerator {
     /// the caller can fall back to the offline summary. Never throws past the gates.
     private func summarizeOnDevice(_ content: String) async -> String? {
         #if canImport(FoundationModels)
-        if #available(iOS 26, *) {
+        if #available(iOS 26, macOS 26, *) {
             guard case .available = SystemLanguageModel.default.availability else { return nil }
             let instructions = """
             You summarize AI/ML research content into a single concise TL;DR one-liner (max 100 chars). \

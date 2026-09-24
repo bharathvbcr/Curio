@@ -25,7 +25,7 @@ import FirebaseAuth
 ///   bound is applied by the Repository's `withTimeout` wrapper around these calls.
 ///
 /// `actor` per CONVENTIONS §5 (owns the lazily-resolved `Firestore` handle).
-actor FirebaseSyncManager {
+actor FirebaseSyncManager: BookmarkCloudMirror {
 
     private var firestoreInstance: Firestore?
     private static let logger = Logger(subsystem: "com.curio.app", category: "FirebaseSyncManager")

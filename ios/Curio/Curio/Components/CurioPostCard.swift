@@ -38,11 +38,11 @@ import PhotosUI
 /// Per-card action callbacks, bound to the bookmark at the call site. Hoisting these (instead
 /// of passing the whole `BookmarkViewModel`) decouples the leaf card from the ViewModel.
 ///
-/// Direct port of the Android `CurioCardActions` data class. `onProcessOcr` takes a `UIImage`
-/// (the iOS analogue of `android.graphics.Bitmap`); `onCreateSpaceAndAssign`'s `color` is an
+/// Direct port of the Android `CurioCardActions` data class. `onProcessOcr` takes image bytes
+/// (the platform-neutral analogue of `android.graphics.Bitmap`); `onCreateSpaceAndAssign`'s `color` is an
 /// `Int64` packed ARGB (Kotlin `Long`); `exportBibtex` returns an optional BibTeX string.
 struct CurioCardActions {
-    let onProcessOcr: (UIImage) -> Void
+    let onProcessOcr: (Data) -> Void
     let onGenerateImagen: () -> Void
     let onSelectTag: (String) -> Void
     let onSelectSpace: (String) -> Void
@@ -172,9 +172,8 @@ struct CurioPostCard: View {
         .onChange(of: ocrPickerItem) { _, item in
             guard let item else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    actions.onProcessOcr(image)
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    actions.onProcessOcr(data)
                 }
                 ocrPickerItem = nil
             }

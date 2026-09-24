@@ -1,5 +1,7 @@
-import ActivityKit
 import Foundation
+#if os(iOS)
+import ActivityKit
+#endif
 
 // ============================================================================
 // Shared Live Activity contract — COMPILED INTO BOTH the Curio app target AND
@@ -60,6 +62,7 @@ enum CurioAttention: Codable, Hashable, Sendable {
     case error(message: String)
 }
 
+#if os(iOS)
 /// The single Live Activity Curio ever runs. It has no static attributes — everything the UI needs
 /// lives in the live-updating `ContentState`.
 struct CurioActivityAttributes: ActivityAttributes {
@@ -163,3 +166,4 @@ struct CurioActivityAttributes: ActivityAttributes {
         }
     }
 }
+#endif

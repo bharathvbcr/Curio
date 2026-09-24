@@ -1,0 +1,106 @@
+name: CurioMac
+options:
+  bundleIdPrefix: com.curio
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_TESTABILITY: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+
+configs:
+  Debug: debug
+  Release: release
+
+targets:
+  CurioMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ../ios/Curio/Curio
+        excludes:
+          - App/CurioApp.swift
+          - Networking/FirebaseSyncManager.swift
+      - path: CurioMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac
+        PRODUCT_NAME: Curio
+        PRODUCT_MODULE_NAME: Curio
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Curio
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: ""
+    info:
+      path: CurioMac/Info.plist
+      properties:
+        CFBundleDisplayName: Curio
+        CFBundleURLTypes:
+          - CFBundleURLName: com.curio.mac.oauth
+            CFBundleURLSchemes: [curio-oauth]
+    dependencies:
+      - target: curio-mcp
+        embed: true
+        codeSign: true
+
+  curio-mcp:
+    type: tool
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ../ios/Curio/Curio/Platform/AgentMCP.swift
+      - path: ../ios/Curio/Curio/Platform/AgentSocket.swift
+      - path: CurioMCP
+    settings:
+      base:
+        PRODUCT_NAME: curio-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac.mcp
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+
+  CurioMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ../ios/CurioTests/AgentAPITests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Curio.app/Contents/MacOS/Curio
+        BUNDLE_LOADER: $(TEST_HOST)
+    dependencies:
+      - target: CurioMac
+
+schemes:
+  CurioMac:
+    build:
+      targets:
+        CurioMac: all
+        curio-mcp: all
+        CurioMacTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CurioMacTests

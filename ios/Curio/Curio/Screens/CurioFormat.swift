@@ -6,16 +6,16 @@
 //
 //  DESIGN §10 (Screens): `enum CurioFormat`: relativeTime, readingTime, displayAuthor,
 //  authorInitial, sourceDisplayName, cleanSnippet, formatEpoch, getCategoryColor
-//  (**stable Java-hashCode reimpl** for fallback), copyToClipboard, tweetUrl, openUrl,
+//  (CategorySpaces palette, same as Kotlin), copyToClipboard, tweetUrl, openUrl,
 //  shareBookmark, exportBackupJson, exportBackupCsv.
 //
 //  CONVENTIONS:
 //  - §1 "Enums as namespaces": caseless `enum CurioFormat` (never instantiated).
-//  - §10 "Java String.hashCode reimplementation is REQUIRED" for `getCategoryColor`'s fallback
-//    palette — Swift `String.hashValue` is randomized per run, so we reimplement the JVM
-//    `31 * h + c` accumulation with Int32 overflow so colors stay STABLE across launches. The
-//    fallback index then mirrors Kotlin `Math.abs(hash) % colors.size` EXACTLY (including the
-//    `Int.MIN_VALUE` edge where `abs` overflows back to a negative — see `javaStringHashCode`).
+//  - `getCategoryColor` reads `CategorySpaces.forCategory`. The old `Math.abs(hash) % palette`
+//    fallback is gone on both platforms; card accents match the Space pill colour.
+//  - `javaStringHashCode` is the signed JVM `String.hashCode` (UTF-16 units, Int32 overflow)
+//    for callers that must match Kotlin, including the store-test `createdAt` default.
+//    Do not apply `abs`: Kotlin keeps the sign, and `Math.abs(Int.MIN_VALUE)` stays negative.
 //  - §8 "ARGB": colours are built with the single `Color(argb:)` boundary helper (Theme),
 //    carrying every `Color(0xFF…)` literal verbatim per the Kotlin palette.
 //  - §10 "Regexes ported with identical patterns": `cleanSnippet` strips `https?://\S+`;
@@ -31,6 +31,8 @@ import Foundation
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 /// Pure formatting + system-interaction helpers for the feed/reader UI. Caseless namespace
@@ -186,9 +188,9 @@ enum CurioFormat {
 
     /// Reimplements `java.lang.String.hashCode()`: `s[0]*31^(n-1) + s[1]*31^(n-2) + … + s[n-1]`,
     /// accumulated as `h = 31*h + c` over the string's **UTF-16 code units** with Int32 (two's
-    /// complement) overflow. This is the deterministic value the Kotlin `getCategoryColor` fallback
-    /// relied on (CONVENTIONS §10). Swift's `String.hashValue` is salted per-run and would break
-    /// colour stability, so it must NOT be used here.
+    /// complement) overflow. The result is signed, matching Kotlin `String.hashCode()` /
+    /// `id.hashCode().toLong()`. Swift's `String.hashValue` is salted per run and must not be
+    /// substituted. `"polygenelubricants"` hashes to `Int32.min`.
     static func javaStringHashCode(_ s: String) -> Int32 {
         var h: Int32 = 0
         // Java iterates UTF-16 code units, not Unicode scalars — `String.utf16` matches that.
@@ -198,27 +200,27 @@ enum CurioFormat {
         return h
     }
 
-    /// `Math.abs(Int)` with the JVM's overflow behaviour: `Math.abs(Int.min) == Int.min`.
-    private static func javaAbs(_ v: Int32) -> Int32 {
-        if v == Int32.min { return Int32.min } // overflow preserved (matches JVM)
-        return v < 0 ? -v : v
-    }
-
     // MARK: - Clipboard / share / open
 
-    #if canImport(UIKit)
     /// Copies `text` to the system pasteboard. Port of `copyToClipboard(context, text, label)`.
-    /// The Android `ClipData.newPlainText(label, …)` label has no iOS pasteboard analogue for plain
+    /// The Android `ClipData.newPlainText(label, …)` label has no pasteboard analogue for plain
     /// strings, so `label` is accepted (default "Curio") for signature parity but unused. Returns
     /// `true` on success — the call site drives the "Copied details to clipboard!" overlay (the
     /// Android Toast). Any failure returns `false` (the "Failed to copy context" Toast analogue).
     @discardableResult
     @MainActor
     static func copyToClipboard(_ text: String, label: String = "Curio") -> Bool {
+        #if canImport(UIKit)
         UIPasteboard.general.string = text
         return true
+        #elseif canImport(AppKit)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+        #else
+        return false
+        #endif
     }
-    #endif
 
     /// The canonical X/Twitter permalink for a bookmark that originated as a tweet. Port of
     /// `tweetUrl(bookmark)`.
@@ -238,8 +240,7 @@ enum CurioFormat {
         return "https://x.com/\(handle)/status/\(id)"
     }
 
-    #if canImport(UIKit)
-    /// Opens a URL in the device browser, normalising a bare host to https. Port of
+    /// Opens a URL in the system browser, normalising a bare host to https. Port of
     /// `openUrl(context, rawUrl)`.
     ///
     /// Returns `.noLink` when the URL is blank ("No link on this bookmark"), `.failed` when the URL
@@ -257,13 +258,17 @@ enum CurioFormat {
             ? trimmed
             : "https://\(trimmed)"
         guard let url = URL(string: normalized) else { return .failed }
+        #if canImport(UIKit)
         guard UIApplication.shared.canOpenURL(url) else { return .failed }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
         return .opened
+        #elseif canImport(AppKit)
+        return NSWorkspace.shared.open(url) ? .opened : .failed
+        #else
+        return .failed
+        #endif
     }
-    #endif
 
-    #if canImport(UIKit)
     /// Presents the system share sheet for `text`. Port of `shareBookmark(context, text)`
     /// (`ACTION_SEND` + `createChooser("Share Curio Metadata")`).
     ///
@@ -274,6 +279,12 @@ enum CurioFormat {
     @MainActor
     @discardableResult
     static func shareBookmark(_ text: String) -> Bool {
+        #if canImport(AppKit) && !canImport(UIKit)
+        guard let view = NSApp.keyWindow?.contentView else { return false }
+        let picker = NSSharingServicePicker(items: [text])
+        picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        return true
+        #else
         guard let presenter = topViewController() else { return false }
         let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
         // iPad popover anchoring — present from the presenter's view centre so it never crashes on
@@ -285,8 +296,10 @@ enum CurioFormat {
         }
         presenter.present(activity, animated: true, completion: nil)
         return true
+        #endif
     }
 
+    #if canImport(UIKit)
     /// Resolves the top-most presented view controller in the foreground active scene.
     @MainActor
     private static func topViewController() -> UIViewController? {

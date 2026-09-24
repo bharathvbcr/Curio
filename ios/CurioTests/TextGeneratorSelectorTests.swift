@@ -35,14 +35,9 @@ private struct DecliningNanoGenerator: TextGenerator {
 /// `Curio/AI/LanguageGate.swift`.
 ///
 /// ENVIRONMENT NOTE (API mismatch vs the Android test): on Android, Robolectric guaranteed
-/// `GenAiAvailability` reported UNAVAILABLE (no AICore on the JVM), so "Nano unavailable → cloud"
-/// was deterministic with plain label stubs. The iOS `GenAiAvailability` is a concrete struct that
-/// probes `SystemLanguageModel.default.availability` with **no injection seam**, so the gate's
-/// outcome depends on the test host. To keep the ported assertion deterministic, the nano stub here
-/// *itself* throws `NanoUnavailable` — the exact error the real on-device generator throws when the
-/// gate rejects — so the selector must route to cloud whether the availability gate short-circuits
-/// (host without Apple Intelligence) or nano is invoked and declines (host with it). Same contract,
-/// both paths land on CLOUD.
+/// `GenAiAvailability` reported UNAVAILABLE (no AICore on the JVM). `GenAiAvailability` now takes
+/// an optional probe; these selector tests still force the decline from the nano stub itself
+/// (`NanoUnavailable`) so the cloud route is asserted whether or not the host model is downloaded.
 @Suite("TextGeneratorSelector (mirrors TextGeneratorSelectorTest.kt)")
 struct TextGeneratorSelectorTests {
 

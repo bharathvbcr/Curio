@@ -135,14 +135,7 @@ struct BookmarkApp: View {
         .curioTheme(darkTheme: darkThemeOverride)
         // The full-screen reader is hosted as a cover above the whole shell, mirroring the Kotlin
         // `activeReaderBookmark?.let { ReaderViewScreen(...) }` overlay at the BookmarkApp root.
-        .fullScreenCover(item: $activeReaderBookmark) { bookmark in
-            ReaderView(
-                bookmark: bookmark,
-                tier: resolvedTier,
-                darkTheme: isDark,
-                onClose: { activeReaderBookmark = nil }
-            )
-        }
+        .modifier(ReaderCover(bookmark: $activeReaderBookmark, tier: resolvedTier, darkTheme: isDark))
     }
 
     // MARK: - Signed-in shell (scaffold + drawer)
@@ -651,5 +644,33 @@ private struct XAccountCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.curioPressBounce)
+    }
+}
+
+/// Full-screen reader on iOS. macOS presents the same reader as a sheet.
+private struct ReaderCover: ViewModifier {
+    @Binding var bookmark: Bookmark?
+    let tier: GlassTier
+    let darkTheme: Bool
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.fullScreenCover(item: $bookmark) { item in
+            reader(item)
+        }
+        #else
+        content.sheet(item: $bookmark) { item in
+            reader(item)
+        }
+        #endif
+    }
+
+    private func reader(_ item: Bookmark) -> some View {
+        ReaderView(
+            bookmark: item,
+            tier: tier,
+            darkTheme: darkTheme,
+            onClose: { bookmark = nil }
+        )
     }
 }

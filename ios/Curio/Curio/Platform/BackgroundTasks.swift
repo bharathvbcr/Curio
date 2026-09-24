@@ -93,6 +93,7 @@ final class BackgroundTaskCoordinator {
     /// / `CurioApp.init` **before** the app finishes launching, per `BGTaskScheduler` contract.
     /// Idempotent registration is the caller's responsibility (register exactly once per identifier).
     func registerHandlers() {
+        #if os(iOS)
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: TaskID.embeddingIndex,
             using: nil
@@ -116,6 +117,7 @@ final class BackgroundTaskCoordinator {
             }
             self.handleLinkSweep(processingTask)
         }
+        #endif
     }
 
     // MARK: - Scheduling
@@ -125,10 +127,12 @@ final class BackgroundTaskCoordinator {
     /// identifier, so an already-pending request is left unchanged (WorkManager `KEEP` semantics).
     /// Mirrors `EmbeddingIndexScheduler.ensureScheduled` + the sweeper's own startup scheduling.
     func ensureScheduled() {
+        #if os(iOS)
         if isIndexWhileChargingEnabled() {
             scheduleEmbeddingIndex()
         }
         scheduleLinkSweep()
+        #endif
     }
 
     /// Whether charging-time on-device indexing is enabled. Defaults to on. Mirrors
@@ -145,16 +149,19 @@ final class BackgroundTaskCoordinator {
     /// periodic job.
     func setIndexWhileChargingEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: Prefs.indexWhileChargingKey)
+        #if os(iOS)
         if enabled {
             scheduleEmbeddingIndex()
         } else {
             cancelEmbeddingIndex()
         }
+        #endif
     }
 
     /// Submits the charging-gated embedding backfill. Re-submitting the same identifier while a request
     /// is already pending is a no-op (KEEP). Mirrors `EmbeddingIndexScheduler.schedulePeriodic`.
     /// `nonisolated` so the off-main BGTask handler can re-arm it.
+    #if os(iOS)
     private nonisolated func scheduleEmbeddingIndex() {
         let request = BGProcessingTaskRequest(identifier: TaskID.embeddingIndex)
         // Direct analogue of `setRequiresCharging(true)`.
@@ -193,6 +200,8 @@ final class BackgroundTaskCoordinator {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: TaskID.embeddingIndex)
     }
 
+    #endif
+
     // MARK: - Run now (explicit user action — immediate, no charging constraint)
 
     /// Fires a one-off on-device backfill immediately (no charging constraint) for an explicit user
@@ -215,6 +224,7 @@ final class BackgroundTaskCoordinator {
         }
     }
 
+    #if os(iOS)
     // MARK: - Handlers
 
     /// BGTask handler for the charging-gated embedding backfill. Wires `expirationHandler` first, runs
@@ -290,6 +300,8 @@ final class BackgroundTaskCoordinator {
         }
     }
 
+    #endif
+
     // MARK: - Teardown
 
     /// Cancels any in-flight "run now" work. Called from the app's scene teardown / `AppEnvironment`
@@ -304,6 +316,7 @@ final class BackgroundTaskCoordinator {
     }
 }
 
+#if os(iOS)
 /// Bridges a non-`Sendable` `BGTask` into the single async completion continuation that reports it
 /// complete. The boxed task is set up on the handler queue and read exactly once from the completion
 /// `Task`, so the `@unchecked Sendable` is sound (there is no concurrent access to the underlying
@@ -312,3 +325,4 @@ private struct TaskBox: @unchecked Sendable {
     let task: BGProcessingTask
     init(_ task: BGProcessingTask) { self.task = task }
 }
+#endif

@@ -238,10 +238,13 @@ final class AppEnvironment {
     @ObservationIgnored lazy var spaceStore: SpaceStore =
         SpaceStore(modelContainer: database.container)
 
-    /// Anonymous-auth-gated Firestore mirror. Port of `AppContainer.firebaseSyncManager`
-    /// (`FirebaseSyncManager(context)`). `FirebaseApp.configure()` is invoked by `CurioApp.init`
-    /// before this is touched (the manager self-configures defensively if not).
-    @ObservationIgnored lazy var firebaseSyncManager: FirebaseSyncManager = FirebaseSyncManager()
+    /// Anonymous-auth-gated Firestore mirror on iOS. The Mac target does not link Firebase:
+    /// that mirror is per-device and is not how a Mac library is filled (X sync is).
+    #if canImport(FirebaseFirestore)
+    @ObservationIgnored lazy var firebaseSyncManager: any BookmarkCloudMirror = FirebaseSyncManager()
+    #else
+    @ObservationIgnored lazy var firebaseSyncManager: any BookmarkCloudMirror = NoOpBookmarkCloudMirror()
+    #endif
 
     /// ChronosFlow handoff bridge ("remind me to read later" / inbox / task). Port of
     /// `AppContainer.chronosFlowBridge` (`ChronosFlowBridge(context)`).
@@ -296,6 +299,39 @@ final class AppEnvironment {
             firebaseSyncManager: firebaseSyncManager,
             authApi: xAuthApi
         )
+
+    /// Agent tools over the same repository the screens use. Read tools do not require the Mac
+    /// agent-access switch; the socket listener checks that switch before it calls this API.
+    func makeLibraryAgentAPI() -> LibraryAgentAPI {
+        let support = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )) ?? FileManager.default.temporaryDirectory
+        let cards = ResearchCardFileStore(directory: support.appendingPathComponent("research-cards", isDirectory: true))
+        let store = tokenStore
+        let writes: @Sendable () async -> Bool = {
+            #if os(macOS)
+            return MacAgentPreferences.writesAllowed()
+            #else
+            return await store.isAgentWritesAllowed()
+            #endif
+        }
+        let keys = xaiKeyStore
+        let library = RepositoryAgentLibrary(
+            repository: bookmarkRepository,
+            spaceStore: spaceStore,
+            embedder: onDeviceEmbeddingProvider,
+            embeddingModelInstalled: embeddingAvailability.isEmbeddingGemmaAvailable(),
+            tokenStore: store,
+            keyConfigured: { keys.isConfigured() },
+            writes: writes,
+            cards: cards
+        )
+        return LibraryAgentAPI(
+            library: library,
+            synthesizer: CurioResearchSynthesizer(analyzer: aiAnalyzer, availability: genAiAvailability),
+            privateContextBudget: 1_500
+        )
+    }
 
     // ========================================================================
     // Init / teardown

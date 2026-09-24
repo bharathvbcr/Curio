@@ -196,7 +196,9 @@ struct BookmarkFeedView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(colors.onSurface)
                 .submitLabel(.search)
+                #if os(iOS)
                 .textInputAutocapitalization(.never)
+                #endif
                 .autocorrectionDisabled(true)
                 .overlay(alignment: .leading) {
                     if searchQuery.isEmpty {
@@ -862,7 +864,7 @@ struct BookmarkFeedView: View {
         // `CurioCardActions`). Swift closures capture `item` by value, so each row gets a fresh
         // action object reflecting the current field values (no stale `isFavorite` capture).
         let cardActions = CurioCardActions(
-            onProcessOcr: { image in viewModel.processOcrForBookmark(bookmarkId: item.id, image: image) },
+            onProcessOcr: { data in viewModel.processOcrForBookmark(bookmarkId: item.id, imageData: data) },
             onGenerateImagen: { viewModel.generateImagenImage(bookmarkId: item.id) },
             onSelectTag: { viewModel.selectTag($0) },
             onSelectSpace: { viewModel.selectSpace($0) },

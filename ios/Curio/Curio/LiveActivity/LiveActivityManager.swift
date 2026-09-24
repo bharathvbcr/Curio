@@ -1,7 +1,9 @@
-@preconcurrency import ActivityKit
 import Foundation
 import Observation
 import os
+#if os(iOS)
+@preconcurrency import ActivityKit
+#endif
 
 /// Drives Curio's single unified Live Activity. Every background source (the BGTask coordinator's
 /// sweep/index runs, the ViewModel's sync path, the digest controller) pushes coarse events here —
@@ -12,6 +14,7 @@ import os
 /// `@MainActor` so mutation is serialized (off-actor callers `await` in, so start/end never race).
 /// `Activity.request` is synchronous, so a new activity is created inline on the main actor — two
 /// interleaved reconciles can't double-start it. `update`/`end` are async and fire-and-forget.
+#if os(iOS)
 @MainActor
 @Observable
 final class LiveActivityManager {
@@ -95,3 +98,17 @@ final class LiveActivityManager {
         Task { await current.end(nil, dismissalPolicy: .immediate) }
     }
 }
+#else
+/// No-op stand-in where ActivityKit is absent (native macOS). Call sites stay source-compatible.
+@MainActor
+@Observable
+final class LiveActivityManager {
+    func taskStarted(_ task: CurioActivityTask) {}
+    func taskProgress(_ task: CurioActivityTask, done: Int, total: Int) {}
+    func taskFinished(_ task: CurioActivityTask) {}
+    func digestReady(itemCount: Int) {}
+    func syncError(_ message: String) {}
+    func clearAttention() {}
+    func close() {}
+}
+#endif

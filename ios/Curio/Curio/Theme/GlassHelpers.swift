@@ -21,6 +21,9 @@
 //
 
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - GlassTier
 
@@ -69,7 +72,7 @@ enum GlassTokens {
 func resolveGlassTier(override: GlassTier? = nil, reduceTransparency: Bool) -> GlassTier {
     if let override { return override }
     if reduceTransparency { return .solid }
-    if #available(iOS 26, *) {
+    if #available(iOS 26, macOS 26, *) {
         return .full
     } else {
         return .blur
@@ -138,7 +141,7 @@ private struct GlassSurfaceModifier<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         // Native iOS 26 glass for Full/Blur when transparency is allowed; else the manual
         // recipe (also the Reduce-Transparency / Solid path).
-        if tier != .solid, !reduceTransparency, #available(iOS 26, *) {
+        if tier != .solid, !reduceTransparency, #available(iOS 26, macOS 26, *) {
             // Native Liquid Glass. `Glass.tint(_:)` takes an optional `Color?`, so passing a
             // `nil` tint yields plain `.regular` (the native effect samples the backdrop itself
             // — no manual frost needed); a non-nil tint colors the glass.
@@ -316,6 +319,9 @@ private extension Color {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         ui.getRed(&r, green: &g, blue: &b, alpha: &a)
         return (Double(r), Double(g), Double(b), Double(a))
+        #elseif canImport(AppKit)
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .black
+        return (Double(ns.redComponent), Double(ns.greenComponent), Double(ns.blueComponent), Double(ns.alphaComponent))
         #else
         return (0, 0, 0, 1)
         #endif

@@ -41,7 +41,7 @@ actor BookmarkRepositoryImpl: BookmarkRepository {
     private let store: BookmarkStore
     private let spaceStore: SpaceStore
     private let tokenStore: TokenStore
-    private let firebaseSyncManager: FirebaseSyncManager
+    private let firebaseSyncManager: any BookmarkCloudMirror
     private let authApi: XAuthApi
 
     private static let logger = Logger(subsystem: "com.curio.app", category: "BookmarkRepo")
@@ -106,7 +106,7 @@ actor BookmarkRepositoryImpl: BookmarkRepository {
         store: BookmarkStore,
         spaceStore: SpaceStore,
         tokenStore: TokenStore,
-        firebaseSyncManager: FirebaseSyncManager,
+        firebaseSyncManager: any BookmarkCloudMirror,
         authApi: XAuthApi
     ) {
         self.api = api

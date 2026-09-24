@@ -71,7 +71,7 @@ struct GlassScaffold<TopBar: View, BottomBar: View, FAB: View, Content: View>: V
     /// iOS 26 so their specular highlights merge correctly (CONVENTIONS §8).
     @ViewBuilder
     private func contentLayer(tier: GlassTier) -> some View {
-        if #available(iOS 26, *) {
+        if #available(iOS 26, macOS 26, *) {
             GlassEffectContainer {
                 contentWithFab(tier: tier)
             }

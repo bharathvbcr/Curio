@@ -241,7 +241,9 @@ struct SettingsView: View {
                     .tint(colors.primary)
 
                 SecureField("xai-…", text: $keyInput)
+                    #if os(iOS)
                     .textInputAutocapitalization(.never)
+                    #endif
                     .autocorrectionDisabled(true)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: .infinity)
@@ -650,7 +652,9 @@ struct SettingsView: View {
                         .tint(colors.primary)
 
                     SecureField("Hugging Face token (optional if already saved)", text: $embedHfToken)
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                         .autocorrectionDisabled(true)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: .infinity)

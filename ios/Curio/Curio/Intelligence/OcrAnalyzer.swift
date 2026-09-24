@@ -1,6 +1,9 @@
 import Foundation
+import ImageIO
 import Vision
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// On-device OCR via the Vision framework. Ports `class OcrAnalyzer` from `data/ocr/OcrAnalyzer.kt`.
 ///
@@ -20,25 +23,42 @@ final class OcrAnalyzer: Sendable {
 
     init() {}
 
+    /// Recognizes text in image bytes. Never throws. A missing bitmap returns the same fallback
+    /// string as a failed `UIImage`/`Bitmap` load.
+    func analyze(imageData: Data) async -> String {
+        guard let cgImage = Self.cgImage(from: imageData) else {
+            return "Bitmap load error: no underlying image data"
+        }
+        return await analyze(cgImage: cgImage)
+    }
+
+    #if canImport(UIKit)
     /// Recognizes text in `image`, returning the joined recognized strings or one of the fallback
     /// strings above. Never throws. Plain `suspend` → `async` (no throws), per CONVENTIONS §3.
     func analyze(_ image: UIImage) async -> String {
-        // Mirror the Kotlin `try { InputImage.fromBitmap(...) } catch → "Bitmap load error: …"`:
-        // a missing CGImage means the bitmap could not be loaded into the recognizer.
         guard let cgImage = image.cgImage else {
             return "Bitmap load error: no underlying image data"
         }
+        return await analyze(cgImage: cgImage)
+    }
+    #endif
 
-        if #available(iOS 26, *) {
+    private func analyze(cgImage: CGImage) async -> String {
+        if #available(iOS 26, macOS 26, *) {
             return await recognizeModern(cgImage)
         } else {
             return await recognizeLegacy(cgImage)
         }
     }
 
-    // MARK: - iOS 26+ async RecognizeTextRequest
+    private static func cgImage(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
 
-    @available(iOS 26, *)
+    // MARK: - iOS 26+ / macOS 26+ async RecognizeTextRequest
+
+    @available(iOS 26, macOS 26, *)
     private func recognizeModern(_ cgImage: CGImage) async -> String {
         do {
             var request = RecognizeTextRequest()

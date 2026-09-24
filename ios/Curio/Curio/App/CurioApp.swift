@@ -165,7 +165,7 @@ struct CurioApp: App {
         )
         let sweeper = LinkSweeper(
             store: environment.bookmarkStore,
-            firebaseSyncManager: environment.firebaseSyncManager
+            cloudMirror: FirestoreDeleteMirror(mirror: environment.firebaseSyncManager)
         )
         // The coordinator surfaces sweep/index runs in the ONE unified Live Activity shared with the
         // rest of the graph (sync/digest feed the same manager from the ViewModel).

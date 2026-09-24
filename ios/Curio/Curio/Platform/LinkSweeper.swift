@@ -48,10 +48,6 @@ actor LinkSweeper {
     /// Quick HEAD-check connect/read timeout. Mirrors OkHttp `connectTimeout(5s)` / `readTimeout(5s)`.
     private static let requestTimeout: TimeInterval = 5
 
-    init(store: BookmarkStore, firebaseSyncManager: FirebaseSyncManager) {
-        self.init(store: store, cloudMirror: firebaseSyncManager)
-    }
-
     /// Test seam: inject the cloud mirror and session directly.
     init(
         store: BookmarkStore,
@@ -173,4 +169,10 @@ actor LinkSweeper {
     }
 }
 
-extension FirebaseSyncManager: LinkSweeper.CloudMirror {}
+/// Adapts the bookmark cloud mirror to the sweeper's delete-only seam.
+struct FirestoreDeleteMirror: LinkSweeper.CloudMirror {
+    let mirror: any BookmarkCloudMirror
+    func deleteBookmarks(ids: [String]) async {
+        await mirror.deleteBookmarks(ids: ids)
+    }
+}
