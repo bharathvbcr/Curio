@@ -69,6 +69,16 @@ struct CurioFormatTests {
         #expect(CurioFormat.authorInitial(bm()) == nil) // no author
     }
 
+    /// JVM `String.hashCode` over UTF-16 units, including the `Int.MIN_VALUE` overflow string.
+    /// Category colours do not use this hash; the store-test `createdAt` default does.
+    @Test("javaStringHashCode matches JVM String.hashCode")
+    func javaStringHashCodeMatchesJvm() {
+        #expect(CurioFormat.javaStringHashCode("") == 0)
+        #expect(CurioFormat.javaStringHashCode("a") == 97)
+        #expect(CurioFormat.javaStringHashCode("1") == 49)
+        #expect(CurioFormat.javaStringHashCode("polygenelubricants") == Int32.min)
+    }
+
     /// Kotlin: `displayAuthor prefers real author then source`.
     @Test("displayAuthor prefers real author then source")
     func displayAuthorPrefersRealAuthor() {

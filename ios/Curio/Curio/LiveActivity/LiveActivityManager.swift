@@ -112,3 +112,10 @@ final class LiveActivityManager {
     func close() {}
 }
 #endif
+
+/// One construction site for `LiveActivityManager`. The type is declared twice (ActivityKit
+/// and the macOS no-op), so callers go through this name rather than picking a declaration.
+@MainActor
+enum LiveActivityManagers {
+    static func make() -> LiveActivityManager { LiveActivityManager() }
+}

@@ -132,7 +132,7 @@ struct BookmarkApp: View {
             }
         }
         // Theme resolution: System/Light/Dark → darkTheme override (nil follows the system).
-        .curioTheme(darkTheme: darkThemeOverride)
+        .modifier(CurioThemeModifier(darkTheme: darkThemeOverride))
         // The full-screen reader is hosted as a cover above the whole shell, mirroring the Kotlin
         // `activeReaderBookmark?.let { ReaderViewScreen(...) }` overlay at the BookmarkApp root.
         .modifier(ReaderCover(bookmark: $activeReaderBookmark, tier: resolvedTier, darkTheme: isDark))

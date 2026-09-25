@@ -152,6 +152,9 @@ struct CurioApp: App {
         AppDependencyManager.shared.add { repository }
         AppDependencyManager.shared.add { tokenStore }
         AppDependencyManager.shared.add { chronosFlowBridge }
+        // App Intents discovers `CurioShortcuts` by conformance. Reading the shortcut list
+        // here ties that provider to the same launch graph as the dependencies it uses.
+        _ = CurioShortcuts.appShortcuts
 
         // ── Background coordinator ──────────────────────────────────────────────────────────────
         // Assemble the on-device-only embedding backfill + link sweep from container nodes. The

@@ -21,6 +21,12 @@ import SwiftData
 /// `#Index` mirrors Room's single `[userId]` index (`SpaceEntity.kt` `indices`).
 ///
 /// `@Model` is NOT `Sendable`: the `SpaceStore` actor converts to/from the `Space` domain `struct`.
+
+/// The model `CurioDatabase` puts in its `Schema`.
+enum SpaceModelSchema {
+    static let persistentModel: any PersistentModel.Type = SpaceModel.self
+}
+
 @Model
 final class SpaceModel {
     @Attribute(.unique) var id: String

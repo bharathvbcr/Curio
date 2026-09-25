@@ -17,8 +17,8 @@ import Testing
 ///   read — the store returns the current rows; the hot re-emission lives in the repository layer.
 /// - `BookmarkEntity` becomes the domain `Bookmark` (the store converts at the actor boundary);
 ///   the `entity(...)` factory mirrors the Kotlin one field-for-field, including the
-///   `createdAt = id.hashCode().toLong()` default (Java `String.hashCode` reimplemented below so
-///   the ordering inputs stay byte-identical).
+///   `createdAt = id.hashCode().toLong()` default (`CurioFormat.javaStringHashCode`, so the
+///   ordering inputs stay byte-identical to Kotlin).
 @Suite("BookmarkStore (mirrors BookmarkDaoTest.kt)")
 struct BookmarkStoreTests {
 
@@ -36,14 +36,12 @@ struct BookmarkStoreTests {
         store = BookmarkStore(modelContainer: container)
     }
 
-    /// Java `String.hashCode()` (31-based, overflow-wrapping over UTF-16 units) so the
-    /// `createdAt = id.hashCode().toLong()` default matches the Kotlin factory byte-for-byte.
-    private static func javaHashCode(_ s: String) -> Int32 {
-        var hash: Int32 = 0
-        for unit in s.utf16 {
-            hash = 31 &* hash &+ Int32(unit)
-        }
-        return hash
+    /// The container schema is built from these values, not from a second list of model types.
+    @Test("schema enums name the SwiftData models")
+    func schemaEnumsNameModels() {
+        #expect(ObjectIdentifier(BookmarkModelSchema.persistentModel) == ObjectIdentifier(BookmarkModel.self))
+        #expect(ObjectIdentifier(SpaceModelSchema.persistentModel) == ObjectIdentifier(SpaceModel.self))
+        #expect(ObjectIdentifier(SemanticCacheEntrySchema.persistentModel) == ObjectIdentifier(SemanticCacheEntry.self))
     }
 
     /// Mirrors the Kotlin `entity(...)` factory (defaults included). `text` uses a nil sentinel
@@ -60,7 +58,7 @@ struct BookmarkStoreTests {
         Bookmark(
             id: id,
             text: text ?? "text \(id)",
-            createdAt: createdAt ?? Int64(Self.javaHashCode(id)),
+            createdAt: createdAt ?? Int64(CurioFormat.javaStringHashCode(id)),
             userId: uid,
             summary: summary,
             category: category,

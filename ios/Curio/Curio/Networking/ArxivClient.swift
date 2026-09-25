@@ -18,6 +18,15 @@ struct ArxivMeta: Sendable, Equatable {
 /// up to 3× (503 → `2000ms*(n+1)`, other error → `1000ms*(n+1)`), then parses the Atom feed with an
 /// `XMLParser` state machine mirroring the Kotlin `XmlPullParser` (inEntry/inAuthor + tag stack).
 /// Resilient: logs and returns `nil` on any failure; rethrows `CancellationError`.
+
+/// Builds the process's arXiv client. `AppEnvironment` goes through this so the actor
+/// has one construction site.
+enum ArxivClientFactory {
+    static func make(http: HTTPClient, baseUrl: String = ArxivClient.defaultBaseURL) -> ArxivClient {
+        ArxivClient(http: http, baseUrl: baseUrl)
+    }
+}
+
 actor ArxivClient {
 
     static let defaultBaseURL = "https://export.arxiv.org/api/query"

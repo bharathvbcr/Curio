@@ -195,7 +195,7 @@ final class AppEnvironment {
 
     /// arXiv Atom client. Was `ArxivClient(metadataClient)`; here the actor wraps the shared
     /// `HTTPClient` (which carries the 15 s metadata session). Port of `AppContainer.arxivClient`.
-    @ObservationIgnored lazy var arxivClient: ArxivClient = ArxivClient(http: http)
+    @ObservationIgnored lazy var arxivClient: ArxivClient = ArxivClientFactory.make(http: http)
 
     /// Crossref DOI client. Port of `AppContainer.crossrefClient` (`CrossrefClient(metadataClient)`).
     @ObservationIgnored lazy var crossrefClient: CrossrefClient = CrossrefClient(http: http)
@@ -257,7 +257,7 @@ final class AppEnvironment {
 
     /// Drives Curio's single unified Live Activity (sync / sweep / index / digest). Shared between the
     /// `BackgroundTaskCoordinator` (assembled in `CurioApp.init`) and the ViewModel/digest paths.
-    @ObservationIgnored lazy var liveActivityManager: LiveActivityManager = LiveActivityManager()
+    @ObservationIgnored lazy var liveActivityManager: LiveActivityManager = LiveActivityManagers.make()
 
     /// Schedules Curio-owned read-later reminders in-house (twin of Android `ReminderScheduler`).
     @ObservationIgnored lazy var reminderScheduler: ReminderScheduler = ReminderScheduler()

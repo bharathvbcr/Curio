@@ -8,6 +8,12 @@ import SwiftData
 ///
 /// `embedding` is the EmbeddingGemma query vector as a little-endian Float32 blob
 /// (`VectorSearch.floatArrayToData`), matching the format used for bookmark embeddings.
+
+/// The model `CurioDatabase` puts in its `Schema`.
+enum SemanticCacheEntrySchema {
+    static let persistentModel: any PersistentModel.Type = SemanticCacheEntry.self
+}
+
 @Model
 final class SemanticCacheEntry {
     @Attribute(.unique) var id: String

@@ -61,7 +61,7 @@ struct CurioTheme<Content: View>: View {
 
 // MARK: - .curioTheme(...) modifier
 
-private struct CurioThemeModifier: ViewModifier {
+struct CurioThemeModifier: ViewModifier {
     var darkTheme: Bool?
     var brandSeed: Color?
 

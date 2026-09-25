@@ -24,6 +24,13 @@ import SwiftData
 ///
 /// `@Model` is NOT `Sendable`: never pass an instance across actor/context boundaries — the
 /// `BookmarkStore` actor converts to/from the `Bookmark` domain `struct` before returning.
+
+/// The model `CurioDatabase` puts in its `Schema`. Kept beside the `@Model` type so the
+/// container's schema and this file stay one decision.
+enum BookmarkModelSchema {
+    static let persistentModel: any PersistentModel.Type = BookmarkModel.self
+}
+
 @Model
 final class BookmarkModel {
     @Attribute(.unique) var id: String
