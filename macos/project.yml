@@ -60,6 +60,9 @@ targets:
       - target: curio-mcp
         embed: true
         codeSign: true
+        link: false
+        copy:
+          destination: executables
 
   curio-mcp:
     type: tool
@@ -82,6 +85,7 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: ../ios/CurioTests/AgentAPITests.swift
+      - path: ../ios/CurioTests/AuthSignInTests.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac.tests

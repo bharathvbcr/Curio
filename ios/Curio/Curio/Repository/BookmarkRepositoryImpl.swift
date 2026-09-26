@@ -1024,7 +1024,7 @@ actor BookmarkRepositoryImpl: BookmarkRepository {
             )
             let userId = await tokenStore.getUserId() ?? ""
             // X rotates refresh tokens; persist the new one (fall back to the old if absent).
-            await tokenStore.saveTokens(
+            try await tokenStore.saveTokens(
                 accessToken: resp.accessToken,
                 refreshToken: resp.refreshToken ?? refresh,
                 userId: userId

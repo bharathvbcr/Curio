@@ -19,17 +19,13 @@ struct SocketTransport: AgentTransport {
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         let request = AgentLine.request(token: token, tool: tool, argumentsJSON: argumentsJSON)
-        AgentSocketIO.writeLine(request, fd: fd)
+        guard AgentSocketIO.writeLine(request, fd: fd) else { return nil }
         return AgentSocketIO.readLine(fd: fd)
     }
 
     private func launchApp() {
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let app = executable
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        guard app.pathExtension == "app" else { return }
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0])
+        guard let app = AgentAppLocator.appBundle(containing: executable) else { return }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = false
         NSWorkspace.shared.openApplication(at: app, configuration: config) { _, _ in }

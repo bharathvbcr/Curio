@@ -60,6 +60,14 @@ enum AgentLookup {
         }
     }
 
+    /// Sources other than the on-device library. `"library"` is grounding, not an xAI live source.
+    static func liveSources(_ sources: [String]) -> [String] {
+        sources.filter { source in
+            let name = source.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !name.isEmpty && name.caseInsensitiveCompare("library") != .orderedSame
+        }
+    }
+
     static func citationURL(_ bookmark: Bookmark) -> String? {
         switch bookmark.sourceType {
         case .ARXIV: return "https://arxiv.org/abs/\(bookmark.sourceId ?? "null")"
@@ -72,7 +80,7 @@ enum AgentLookup {
 }
 
 protocol ResearchSynthesizer: Sendable {
-    func brief(question: String, bookmarks: [Bookmark], privateMode: Bool) async -> AgentToolResult
+    func brief(question: String, bookmarks: [Bookmark], privateMode: Bool, sources: [String]) async -> AgentToolResult
 }
 
 protocol AgentLibrary: Sendable {
@@ -98,6 +106,28 @@ struct LibraryAgentAPI: Sendable {
     var library: any AgentLibrary
     var synthesizer: any ResearchSynthesizer
     var privateContextBudget: Int
+    var liveAllowed: @Sendable () -> Bool
+
+    init(
+        library: any AgentLibrary,
+        synthesizer: any ResearchSynthesizer,
+        privateContextBudget: Int,
+        liveAllowed: @escaping @Sendable () -> Bool = LibraryAgentAPI.platformLiveAllowed
+    ) {
+        self.library = library
+        self.synthesizer = synthesizer
+        self.privateContextBudget = privateContextBudget
+        self.liveAllowed = liveAllowed
+    }
+
+    /// Mac live research is a user switch. Other platforms leave the caller's `privateMode` in charge.
+    static func platformLiveAllowed() -> Bool {
+        #if os(macOS)
+        MacAgentPreferences.liveResearchAllowed()
+        #else
+        true
+        #endif
+    }
 
     func call(tool: String, argumentsJSON: String) async -> String {
         let args = AgentArguments(json: argumentsJSON)
@@ -151,6 +181,8 @@ struct LibraryAgentAPI: Sendable {
             return await saveResearch(question: args.string("question") ?? "", answer: args.string("answer") ?? "", ids: args.strings("ids"))
         case "read_resource":
             return await readResource(uri: args.string("uri") ?? "")
+        case "get_prompt":
+            return prompt(name: args.string("name") ?? args.string("uri") ?? "", arguments: args)
         default:
             return .failure(.unknownTool, payload: tool)
         }
@@ -186,21 +218,33 @@ struct LibraryAgentAPI: Sendable {
 
     func research(question: String, privateMode: Bool, sources: [String], limit: Int) async -> AgentToolResult {
         guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
-        let live = sources.filter { $0 != "library" && $0 != "LIBRARY" }
+        let live = AgentLookup.liveSources(sources)
         if privateMode && !live.isEmpty { return .failure(.privateMode) }
+        let wantsLive = !privateMode || !live.isEmpty
+        if wantsLive && !liveAllowed() {
+            return .failure(.privateMode, payload: "live_research_disabled")
+        }
         let retrieved = await semantic(query: question, limit: limit, anchorId: nil)
-        if !retrieved.ok { return retrieved }
-        let all = await library.allBookmarks(userId: userId)
-        let allowedIds = Set(AgentJSON.ids(in: retrieved.payload))
-        let bookmarks = all.filter { allowedIds.contains($0.id) }
-        if privateMode && AgentLookup.tokenEstimate(bookmarks) > privateContextBudget {
-            return .failure(.contextExceeded, payload: AgentJSON.ids(bookmarks.map(\.id)))
+        let bookmarks: [Bookmark]
+        let allowedIds: Set<String>
+        if retrieved.ok {
+            let all = await library.allBookmarks(userId: userId)
+            allowedIds = Set(AgentJSON.ids(in: retrieved.payload))
+            bookmarks = all.filter { allowedIds.contains($0.id) }
+            if privateMode && AgentLookup.tokenEstimate(bookmarks) > privateContextBudget {
+                return .failure(.contextExceeded, payload: AgentJSON.ids(bookmarks.map(\.id)))
+            }
+        } else if privateMode || live.isEmpty {
+            return retrieved
+        } else {
+            bookmarks = []
+            allowedIds = []
         }
         if !privateMode {
             let configured = await library.xaiConfigured()
             if !configured { return .failure(.keyMissing) }
         }
-        let synthesized = await synthesizer.brief(question: question, bookmarks: bookmarks, privateMode: privateMode)
+        let synthesized = await synthesizer.brief(question: question, bookmarks: bookmarks, privateMode: privateMode, sources: live)
         guard synthesized.ok, let brief = ResearchBrief(json: synthesized.payload) else { return synthesized }
         let unknown = AgentLookup.unknownCitations(claimIds: brief.claimBookmarkIds, allowed: allowedIds)
         if !unknown.isEmpty {
@@ -311,6 +355,27 @@ struct LibraryAgentAPI: Sendable {
         }
     }
 
+    private func prompt(name: String, arguments: AgentArguments) -> AgentToolResult {
+        let subject = arguments.string("topic")
+            ?? arguments.string("question")
+            ?? arguments.childString("topic")
+            ?? arguments.childString("question")
+            ?? ""
+        let focus = subject.isEmpty ? "" : " on \(subject)"
+        let text: String
+        switch name {
+        case "research-brief":
+            text = "Ask Curio for a grounded research brief\(focus). Call research_topic. Stay in private mode unless live research is enabled."
+        case "compare-sources":
+            text = "Compare the bookmarks the user names\(focus). Load each one with get_bookmark and cite only those ids."
+        case "reading-queue":
+            text = "Summarize the reading queue returned by reading_queue. Do not add items that the tool did not return."
+        default:
+            return .failure(.unknownTool, payload: name)
+        }
+        return .success(text)
+    }
+
     private func readResource(uri: String) async -> AgentToolResult {
         if uri == "curio://library/recent" { return await search(query: "", limit: 20) }
         if uri.hasPrefix("curio://bookmark/") {
@@ -377,6 +442,10 @@ private struct AgentArguments {
     }
     func bool(_ key: String) -> Bool? { object[key] as? Bool }
     func strings(_ key: String) -> [String] { object[key] as? [String] ?? [] }
+    func childString(_ key: String) -> String? {
+        guard let child = object["arguments"] as? [String: Any] else { return nil }
+        return child[key] as? String
+    }
 }
 
 private enum AgentJSON {

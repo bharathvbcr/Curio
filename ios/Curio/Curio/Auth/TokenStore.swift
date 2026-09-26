@@ -149,7 +149,9 @@ actor TokenStore {
 
     // MARK: - Session writes
 
-    /// Saves credentials. Mirrors the Kotlin write transaction exactly:
+    /// Saves credentials. Throws if the access token, refresh token, or user id cannot be
+    /// written, so a sign-in is not reported as successful when the Keychain rejected it.
+    /// Display name and handle are best-effort. Mirrors the Kotlin write transaction:
     /// - refresh token: persisted, or empty string when `nil`;
     /// - username / name: written when non-nil, otherwise the item is **removed**.
     func saveTokens(
@@ -158,19 +160,19 @@ actor TokenStore {
         userId: String,
         username: String? = nil,
         name: String? = nil
-    ) {
-        Self.write(account: Account.accessToken, value: accessToken)
-        Self.write(account: Account.refreshToken, value: refreshToken ?? "")
-        Self.write(account: Account.userId, value: userId)
+    ) throws {
+        try Self.write(account: Account.accessToken, value: accessToken)
+        try Self.write(account: Account.refreshToken, value: refreshToken ?? "")
+        try Self.write(account: Account.userId, value: userId)
 
         if let username {
-            Self.write(account: Account.username, value: username)
+            try? Self.write(account: Account.username, value: username)
         } else {
             Self.delete(account: Account.username)
         }
 
         if let name {
-            Self.write(account: Account.name, value: name)
+            try? Self.write(account: Account.name, value: name)
         } else {
             Self.delete(account: Account.name)
         }
@@ -191,7 +193,7 @@ actor TokenStore {
 
     /// Persists the Hugging Face token.
     func saveHuggingFaceToken(_ token: String) {
-        Self.write(account: Account.huggingFaceToken, value: token)
+        try? Self.write(account: Account.huggingFaceToken, value: token)
     }
 
     // MARK: - xAI key (survives clear(); blank deletes)
@@ -208,7 +210,7 @@ actor TokenStore {
         if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Self.delete(account: Account.xaiKey)
         } else {
-            Self.write(account: Account.xaiKey, value: key)
+            try? Self.write(account: Account.xaiKey, value: key)
         }
     }
 
@@ -282,7 +284,7 @@ actor TokenStore {
 
     /// Upserts a UTF-8 string for `account`. Performs an update-then-add so the item is replaced
     /// in place (mirrors DataStore `edit { … = value }` overwrite semantics).
-    private static func write(account: String, value: String) {
+    private static func write(account: String, value: String) throws {
         let data = Data(value.utf8)
         let query = baseQuery(account: account)
 
@@ -301,9 +303,11 @@ actor TokenStore {
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             if addStatus != errSecSuccess {
                 logger.warning("Keychain add failed (status: \(addStatus))")
+                try KeychainWrite.requireSuccess(addStatus)
             }
         } else {
             logger.warning("Keychain update failed (status: \(updateStatus))")
+            try KeychainWrite.requireSuccess(updateStatus)
         }
     }
 
@@ -312,6 +316,25 @@ actor TokenStore {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             logger.warning("Keychain delete failed (status: \(status))")
+        }
+    }
+}
+
+enum TokenStoreError: Error, LocalizedError, Sendable {
+    case keychain(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case let .keychain(status):
+            return "Could not save the sign-in (Keychain status \(status))."
+        }
+    }
+}
+
+enum KeychainWrite {
+    static func requireSuccess(_ status: OSStatus) throws {
+        guard status == errSecSuccess else {
+            throw TokenStoreError.keychain(status)
         }
     }
 }

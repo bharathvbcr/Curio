@@ -159,7 +159,7 @@ struct RepositorySyncTests {
     /// A helper (not `defer`) because the teardown calls are `await`s into actors, which `defer`
     /// cannot perform.
     private func withXSession(_ body: () async throws -> Void) async throws {
-        await tokenStore.saveTokens(accessToken: "acc", refreshToken: "ref", userId: uid)
+        try await tokenStore.saveTokens(accessToken: "acc", refreshToken: "ref", userId: uid)
         var thrown: (any Error)?
         do {
             try await body()

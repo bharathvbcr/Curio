@@ -65,8 +65,24 @@ enum AgentRequestGate {
     /// A call is admitted only when agent access is on and the presented token matches the one
     /// the app generated. An empty expected token is a refusal.
     static func admit(presented: String, expected: String, accessEnabled: Bool) -> Bool {
-        guard accessEnabled, !expected.isEmpty else { return false }
-        return presented == expected
+        guard accessEnabled, !expected.isEmpty, !presented.isEmpty else { return false }
+        return sameToken(presented, expected)
+    }
+
+    /// Byte-wise compare with no early exit, so a wrong token does not return faster
+    /// when its first bytes differ.
+    private static func sameToken(_ presented: String, _ expected: String) -> Bool {
+        let left = Array(presented.utf8)
+        let right = Array(expected.utf8)
+        var diff: UInt8 = left.count == right.count ? 0 : 1
+        let count = max(left.count, right.count)
+        if count == 0 { return diff == 0 }
+        for index in 0..<count {
+            let l: UInt8 = index < left.count ? left[index] : 0
+            let r: UInt8 = index < right.count ? right[index] : 0
+            diff |= l ^ r
+        }
+        return diff == 0
     }
 }
 
@@ -148,7 +164,15 @@ struct MCPDispatcher: Sendable {
             }
             let params = object["params"] as? [String: Any] ?? [:]
             let uri = (params["uri"] as? String) ?? (params["name"] as? String) ?? ""
-            let payload = await transport.perform(tool: method == "resources/read" ? "read_resource" : "get_prompt", argumentsJSON: "{\"uri\":\"\(uri)\"}")
+            var arguments: [String: Any] = ["uri": uri, "name": uri]
+            if let extra = params["arguments"] {
+                arguments["arguments"] = extra
+            }
+            let argumentsJSON = MCPCatalog.jsonText(arguments)
+            let payload = await transport.perform(
+                tool: method == "resources/read" ? "read_resource" : "get_prompt",
+                argumentsJSON: argumentsJSON
+            )
             if method == "resources/read" {
                 return rpc(id: id, result: ["contents": [["uri": uri, "mimeType": "application/json", "text": payload]]])
             }
@@ -227,11 +251,18 @@ enum MCPCatalog {
     }
 
     static func errorContent(code: String, detail: String) -> [String: Any] {
-        let payload = "{\"ok\":false,\"code\":\"\(code)\",\"payload\":\"\(detail)\"}"
+        let payload = jsonText(["ok": false, "code": code, "payload": detail, "tier": ""])
         return [
             "content": [["type": "text", "text": payload]],
             "isError": true
         ]
+    }
+
+    static func jsonText(_ object: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else { return "" }
+        return text
     }
 
     private static func tool(_ name: String, _ description: String) -> [String: Any] {
@@ -266,7 +297,8 @@ enum AgentAudit {
     }
 }
 
-/// Mac-only switches. Defaults are off so a fresh install does not publish the agent listener.
+/// Mac-only switches. Defaults are off. The desk may listen on the local socket either way;
+/// a call is admitted only after the user turns access on and presents the minted token.
 /// iOS keeps its own assistant-write default and does not read these keys.
 enum MacAgentPreferences {
     static let accessKey = "mac_agent_access_enabled"
@@ -296,5 +328,63 @@ enum MacAgentPreferences {
             defaults.set(UUID().uuidString, forKey: tokenKey)
         }
         return token(defaults)
+    }
+}
+
+/// Where the embedded `curio-mcp` helper lives, and the client config that points at it.
+enum MacAgentInstall {
+    static let helperName = "curio-mcp"
+
+    /// Prefers `Contents/MacOS`, then the legacy Resources copy XcodeGen used to emit.
+    static func helperURL(
+        bundleURL: URL,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> URL? {
+        let relative = [
+            "Contents/MacOS/\(helperName)",
+            "Contents/Resources/\(helperName)"
+        ]
+        for suffix in relative {
+            let url = bundleURL.appendingPathComponent(suffix)
+            if isExecutable(url.path) { return url }
+        }
+        return nil
+    }
+
+    static func configuration(
+        bundleURL: URL,
+        token: String,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String {
+        let binary = helperURL(bundleURL: bundleURL, isExecutable: isExecutable)?.path
+            ?? bundleURL.appendingPathComponent("Contents/MacOS/\(helperName)").path
+        let object: [String: Any] = [
+            "mcpServers": [
+                "curio": [
+                    "command": binary,
+                    "env": ["CURIO_AGENT_TOKEN": token]
+                ]
+            ]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
+    }
+}
+
+/// Walks up from a helper executable to the `.app` bundle that contains it.
+enum AgentAppLocator {
+    static func appBundle(containing executable: URL) -> URL? {
+        var url = executable.resolvingSymlinksInPath().standardizedFileURL
+        if url.pathExtension != "app" {
+            url.deleteLastPathComponent()
+        }
+        for _ in 0..<8 {
+            if url.pathExtension == "app" { return url }
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { return nil }
+            url = parent
+        }
+        return nil
     }
 }

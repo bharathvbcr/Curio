@@ -7,6 +7,7 @@ struct MacDeskView: View {
     @AppStorage(MacAgentPreferences.accessKey) private var agentAccess = false
     @AppStorage(MacAgentPreferences.writesKey) private var agentWrites = false
     @AppStorage(MacAgentPreferences.liveKey) private var liveResearch = false
+    @AppStorage(MacAgentPreferences.tokenKey) private var agentToken = ""
 
     @State private var bookmarks: [Bookmark] = []
     @State private var spaces: [Space] = []
@@ -53,11 +54,11 @@ struct MacDeskView: View {
         }
         .task {
             if authModel == nil { authModel = environment.makeAuthViewModel() }
+            startAgentListener()
         }
         .task(id: signedInId) {
             guard !signedInId.isEmpty else { return }
             await reload()
-            startAgentListener()
         }
     }
 
@@ -175,26 +176,16 @@ struct MacDeskView: View {
     }
 
     private var mcpSnippet: String {
-        let binary = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/curio-mcp").path
-        let token = MacAgentPreferences.token()
-        return """
-        {
-          "mcpServers": {
-            "curio": {
-              "command": "\(binary)",
-              "env": { "CURIO_AGENT_TOKEN": "\(token)" }
-            }
-          }
-        }
-        """
+        let token = agentToken.isEmpty ? MacAgentPreferences.token() : agentToken
+        return MacAgentInstall.configuration(bundleURL: Bundle.main.bundleURL, token: token)
     }
 
     private func startAgentListener() {
-        if agentAccess { _ = MacAgentPreferences.enableAccess() }
+        if agentAccess { agentToken = MacAgentPreferences.enableAccess() }
         if listener == nil {
             listener = AgentSocketListener(api: environment.makeLibraryAgentAPI())
         }
-        listener?.startIfEnabled()
+        listener?.start()
     }
 
     private func reload() async {

@@ -58,7 +58,7 @@ final class AuthViewModel {
     /// The browser-handoff driver (`ASWebAuthenticationSession` wrapper). Replaces the Android
     /// Custom-Tabs launch + intent-redirect plumbing. Owned by the VM so the session stays strongly
     /// retained for the duration of the round-trip.
-    @ObservationIgnored private let webAuthSession: WebAuthSession
+    @ObservationIgnored private let webAuthSession: any WebAuthenticating
 
     /// The OAuth callback URL scheme registered for `ASWebAuthenticationSession`
     /// (the scheme component of `CurioConfig.xRedirectURI`, e.g. `curio-oauth`).
@@ -77,6 +77,7 @@ final class AuthViewModel {
     /// the in-memory challenge and the user re-initiates login. No persistence is added here, matching
     /// the Android behaviour exactly.)
     @ObservationIgnored private var activeChallenge: AuthChallenge?
+    @ObservationIgnored private var signingInFlight = false
 
     // MARK: - Observable auth state (Kotlin `StateFlow<AuthState>`)
 
@@ -92,7 +93,7 @@ final class AuthViewModel {
     init(
         loginUseCase: LoginUseCase,
         authRepository: AuthRepository,
-        webAuthSession: WebAuthSession = WebAuthSession(),
+        webAuthSession: any WebAuthenticating = WebAuthSession(),
         callbackScheme: String = CurioConfig.callbackScheme
     ) {
         self.loginUseCase = loginUseCase
@@ -141,51 +142,60 @@ final class AuthViewModel {
     /// (the same `Result<Unit>` the Android flow surfaced), defaulting to a no-op for the common UI
     /// call site that only watches `authState`.
     ///
-    /// A user dismissing the sheet yields `AuthError.cancelled`; that is reported through `onResult`
-    /// but otherwise quietly leaves the state at `.signedOut` (the repository never moved it to
-    /// `.signingIn`, matching the Android cancel path which surfaced "Authentication cancelled").
+    /// A second click while a browser session is open does not start another one.
+    /// Every failure is written to `loginError` so the login screen can show it.
     func onLoginClick(onResult: @escaping @MainActor (Result<Void, Error>) -> Void = { _ in }) {
         Task { [weak self] in
-            guard let self else { return }
-            self.loginError = nil
-            let challenge: AuthChallenge
-            do {
-                challenge = try await self.loginUseCase.beginLogin()
-                self.activeChallenge = challenge
-            } catch {
-                Self.logger.error("Failed to construct PKCE login redirect URL")
-                self.loginError = "Could not start sign-in. Check your connection and try again."
-                onResult(.failure(error))
-                return
-            }
-
-            guard let url = URL(string: challenge.authorizationUrl) else {
-                onResult(.failure(AuthError.missingCode))
-                return
-            }
-
-            // Launch the system browser and await the callback URL.
-            let callbackURL: URL
-            do {
-                callbackURL = try await self.webAuthSession.authenticate(
-                    url: url,
-                    callbackScheme: self.callbackScheme
-                )
-            } catch is CancellationError {
-                // Cooperative cancellation — the Task is tearing down. Leave state as-is.
-                return
-            } catch let authError as AuthError {
-                // User dismissed the sheet, or a session error mapped to a typed AuthError.
-                onResult(.failure(authError))
-                return
-            } catch {
-                onResult(.failure(error))
-                return
-            }
-
-            // Run the SAME redirect-handling logic the Android `handleRedirect` ran.
-            self.handleRedirect(callbackURL, onResult: onResult)
+            await self?.performLogin(onResult: onResult)
         }
+    }
+
+    func performLogin(onResult: @escaping @MainActor (Result<Void, Error>) -> Void = { _ in }) async {
+        if signingInFlight {
+            fail(AuthErrorMessage("Sign-in is already in progress."), onResult: onResult)
+            return
+        }
+        signingInFlight = true
+        defer { signingInFlight = false }
+
+        loginError = nil
+        let challenge: AuthChallenge
+        do {
+            challenge = try await loginUseCase.beginLogin()
+            activeChallenge = challenge
+        } catch is CancellationError {
+            return
+        } catch {
+            Self.logger.error("Failed to construct PKCE login redirect URL")
+            fail(AuthErrorMessage("Could not start sign-in. Check your connection and try again."), onResult: onResult)
+            return
+        }
+
+        guard let url = URL(string: challenge.authorizationUrl) else {
+            fail(AuthError.presentationFailed, onResult: onResult)
+            return
+        }
+
+        let callbackURL: URL
+        do {
+            callbackURL = try await webAuthSession.authenticate(
+                url: url,
+                callbackScheme: callbackScheme
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            Self.logger.error("Sign-in browser handoff failed")
+            fail(error, onResult: onResult)
+            return
+        }
+
+        await handleRedirect(callbackURL, onResult: onResult)
+    }
+
+    private func fail(_ error: Error, onResult: @escaping @MainActor (Result<Void, Error>) -> Void) {
+        loginError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        onResult(.failure(error))
     }
 
     // MARK: - Redirect handling (custom-scheme callback)
@@ -199,41 +209,31 @@ final class AuthViewModel {
     ///
     /// The typed `AuthError` cases carry the exact user-facing messages (their `errorDescription`),
     /// preserving the strings the Android `Exception(...)` messages produced.
-    func handleRedirect(_ uri: URL, onResult: @escaping @MainActor (Result<Void, Error>) -> Void) {
-        let components = URLComponents(url: uri, resolvingAgainstBaseURL: false)
-        let queryItems = components?.queryItems ?? []
-        let code = queryItems.first(where: { $0.name == "code" })?.value
-        let stateParam = queryItems.first(where: { $0.name == "state" })?.value
+    func handleRedirect(_ uri: URL, onResult: @escaping @MainActor (Result<Void, Error>) -> Void) async {
+        let fields = OAuthCallback.fields(in: uri)
         let challenge = activeChallenge
 
         // Android: `if (code == null)` → fail with the `error` param (or the cancelled default).
-        guard let code, !code.isEmpty else {
-            let errorParam = queryItems.first(where: { $0.name == "error" })?.value
-            // Mirror `uri.getQueryParameter("error") ?: "Authentication cancelled"`. A present-but-blank
-            // value is treated like the Android `getQueryParameter` (which returns the raw value).
-            let message = errorParam ?? "Authentication cancelled"
-            onResult(.failure(AuthErrorMessage(message)))
+        guard let code = fields.code else {
+            let message = fields.error ?? "Authentication cancelled"
+            fail(AuthErrorMessage(message), onResult: onResult)
             return
         }
 
         // Android: `if (challenge == null || challenge.state != stateParam)` → CSRF state mismatch.
-        guard let challenge, challenge.state == stateParam else {
-            onResult(.failure(AuthError.stateMismatch))
+        guard let challenge, challenge.state == fields.state else {
+            fail(AuthError.stateMismatch, onResult: onResult)
             return
         }
 
-        // Android: `viewModelScope.launch { onResult(loginUseCase.completeLogin(code, verifier)) }`.
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.loginUseCase.completeLogin(code: code, codeVerifier: challenge.codeVerifier)
-                onResult(.success(()))
-            } catch is CancellationError {
-                // Cooperative cancellation — drop silently (the non-throwing Task simply ends).
-                return
-            } catch {
-                onResult(.failure(error))
-            }
+        do {
+            try await loginUseCase.completeLogin(code: code, codeVerifier: challenge.codeVerifier)
+            loginError = nil
+            onResult(.success(()))
+        } catch is CancellationError {
+            return
+        } catch {
+            fail(error, onResult: onResult)
         }
     }
 
@@ -263,6 +263,30 @@ final class AuthViewModel {
 /// the provider's `error` query parameter (or the literal "Authentication cancelled") through
 /// `Result.failure(Exception(message))`; this preserves that exact string for the UI without forcing
 /// it into one of the fixed `AuthError` cases (which carry their own canned descriptions).
+/// Reads `code`, `state`, and `error` from an OAuth redirect. X puts them in the query.
+/// Some browsers rewrite the redirect into the fragment, and a blank value is treated as absent.
+enum OAuthCallback {
+    static func fields(in url: URL) -> (code: String?, state: String?, error: String?) {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var code = item("code", in: components?.queryItems)
+        var state = item("state", in: components?.queryItems)
+        var error = item("error", in: components?.queryItems)
+        if code == nil, let fragment = url.fragment, !fragment.isEmpty {
+            let fragmentItems = URLComponents(string: "https://oauth.invalid/?\(fragment)")?.queryItems
+            code = item("code", in: fragmentItems)
+            if state == nil { state = item("state", in: fragmentItems) }
+            if error == nil { error = item("error", in: fragmentItems) }
+        }
+        return (code, state, error)
+    }
+
+    private static func item(_ name: String, in items: [URLQueryItem]?) -> String? {
+        guard let raw = items?.first(where: { $0.name == name })?.value else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 struct AuthErrorMessage: Error, LocalizedError, Sendable {
     let message: String
     init(_ message: String) { self.message = message }

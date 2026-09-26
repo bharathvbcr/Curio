@@ -19,6 +19,11 @@ enum AuthError: Error, LocalizedError, Sendable {
     /// The user dismissed the `ASWebAuthenticationSession` browser sheet
     /// (`ASWebAuthenticationSessionError.canceledLogin`).
     case cancelled
+    /// The system could not present the sign-in window (`start()` returned false, or the
+    /// presentation anchor was rejected).
+    case presentationFailed
+    /// The browser never returned a callback before the deadline.
+    case timedOut
     /// The redirect callback URL did not carry an authorization `code` (and no usable `error`).
     case missingCode
     /// The token exchange / identity lookup failed; carries the underlying cause.
@@ -30,6 +35,10 @@ enum AuthError: Error, LocalizedError, Sendable {
             return "Login failed: security state mismatch. Please try again."
         case .cancelled:
             return "Login cancelled."
+        case .presentationFailed:
+            return "Could not open the sign-in window. Bring Curio to the front and try again."
+        case .timedOut:
+            return "Sign-in timed out. Try again."
         case .missingCode:
             return "Login failed: no authorization code returned."
         case let .exchangeFailed(error):

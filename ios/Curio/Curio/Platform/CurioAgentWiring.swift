@@ -28,35 +28,54 @@ struct CurioResearchSynthesizer: ResearchSynthesizer {
     let analyzer: XAiAnalyzer
     let availability: GenAiAvailability
 
-    func brief(question: String, bookmarks: [Bookmark], privateMode: Bool) async -> AgentToolResult {
+    func brief(question: String, bookmarks: [Bookmark], privateMode: Bool, sources: [String]) async -> AgentToolResult {
         if privateMode {
             return await privateBrief(question: question, bookmarks: bookmarks)
         }
-        let parts = ChatPromptBuilder.build(
-            userQuery: question,
-            contextItems: bookmarks,
-            useLibrary: true,
-            liveSourceApiTypes: [],
-            liveLabels: ""
-        )
+        let parts = Self.chatParts(question: question, bookmarks: bookmarks, sources: sources)
         let response = await analyzer.generateChatResponse(
             contextPrompt: parts.contextPrompt,
             systemInstruction: parts.systemInstruction,
-            searchParameters: nil,
+            searchParameters: parts.searchParameters,
             reasoningEffort: nil
         )
         if response.text.hasPrefix("xAI API key is missing") {
             return .failure(.keyMissing)
         }
+        let citationURLs = Self.mergedCitations(
+            response.citations,
+            bookmarks.compactMap { AgentLookup.citationURL($0) }
+        )
         let brief = ResearchBrief(
             answer: response.text,
             claimBookmarkIds: bookmarks.map(\.id),
             caveats: "",
             readingList: bookmarks.compactMap { $0.title ?? $0.sourceTitle },
-            citationURLs: bookmarks.compactMap { AgentLookup.citationURL($0) },
+            citationURLs: citationURLs,
             tier: "grok"
         )
         return .success(brief.jsonText(), tier: brief.tier)
+    }
+
+    /// Live sources other than the library become xAI Live Search parameters.
+    static func chatParts(question: String, bookmarks: [Bookmark], sources: [String]) -> ChatPromptBuilder.Parts {
+        let live = AgentLookup.liveSources(sources)
+        return ChatPromptBuilder.build(
+            userQuery: question,
+            contextItems: bookmarks,
+            useLibrary: true,
+            liveSourceApiTypes: live,
+            liveLabels: live.joined(separator: ", ")
+        )
+    }
+
+    static func mergedCitations(_ primary: [String], _ secondary: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for url in primary + secondary where !url.isEmpty && seen.insert(url).inserted {
+            ordered.append(url)
+        }
+        return ordered
     }
 
     private func privateBrief(question: String, bookmarks: [Bookmark]) async -> AgentToolResult {

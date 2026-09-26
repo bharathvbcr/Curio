@@ -41,6 +41,9 @@ final class AuthRepositoryImpl: AuthRepository, @unchecked Sendable {
     /// Backing session subject (initial `.signedOut`). `CurrentValueSubject` is thread-safe for
     /// `value` reads and `send`, so it is the actor-free analogue of `MutableStateFlow`.
     private let authStateSubject = CurrentValueSubject<AuthState, Never>(.signedOut)
+    /// Bumped when a login or logout starts, so a boot restore that read the Keychain earlier
+    /// cannot publish over the newer session.
+    private let sessionEpoch = AuthSessionEpoch()
 
     /// Retains the boot-restore task so it can be cancelled on teardown (avoids a publish after
     /// deinit).
@@ -70,14 +73,19 @@ final class AuthRepositoryImpl: AuthRepository, @unchecked Sendable {
     private func startBootRestore() {
         let tokenStore = self.tokenStore
         let subject = self.authStateSubject
+        let epoch = sessionEpoch
+        let snapshot = epoch.snapshot()
         bootTask = Task.detached(priority: .utility) {
             let hasToken = await tokenStore.hasTokens()
             let userId = await tokenStore.getUserId()
+            guard epoch.unchanged(snapshot) else { return }
             if hasToken, let userId {
                 let username = await tokenStore.getUsername()
                 let name = await tokenStore.getName()
+                guard epoch.unchanged(snapshot) else { return }
                 subject.send(.signedIn(userId: userId, username: username, name: name))
             } else {
+                guard epoch.unchanged(snapshot) else { return }
                 subject.send(.signedOut)
             }
         }
@@ -121,6 +129,7 @@ final class AuthRepositoryImpl: AuthRepository, @unchecked Sendable {
     /// identity, persists everything, and publishes `.signedIn`. Throws `AuthError.exchangeFailed`
     /// on any failure (resetting to `.signedOut` first), collapsing Kotlin `Result<Unit>`.
     func completeLogin(code: String, codeVerifier: String) async throws {
+        sessionEpoch.bump()
         authStateSubject.send(.signingIn)
         let clientId = CurioConfig.clientID
         let redirectUri = CurioConfig.xRedirectURI
@@ -140,7 +149,7 @@ final class AuthRepositoryImpl: AuthRepository, @unchecked Sendable {
             let username = userResponse.data.username
             let name = userResponse.data.name
 
-            await tokenStore.saveTokens(
+            try await tokenStore.saveTokens(
                 accessToken: response.accessToken,
                 refreshToken: response.refreshToken,
                 userId: userId,
@@ -168,7 +177,33 @@ final class AuthRepositoryImpl: AuthRepository, @unchecked Sendable {
 
     /// Purges credentials and publishes `.signedOut`. Plain `async` (no throws).
     func logout() async {
+        sessionEpoch.bump()
         await tokenStore.clear()
         authStateSubject.send(.signedOut)
+    }
+}
+
+/// Monotonic session generation. A boot restore keeps the snapshot it started with and
+/// publishes only when no login or logout has begun since.
+final class AuthSessionEpoch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    func snapshot() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func bump() {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+    }
+
+    func unchanged(_ snapshot: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value == snapshot
     }
 }
