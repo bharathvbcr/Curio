@@ -100,6 +100,8 @@ targets:
       - path: ../ios/CurioTests/AuthSignInTests.swift
       - path: CurioMacTests/MacDeskLibraryTests.swift
       - path: CurioMacTests/MacDeskStressTests.swift
+      - path: CurioMacTests/MacDeskLogicTests.swift
+      - path: CurioMacTests/MacAgentHardeningTests.swift
       - path: ../ios/CurioTests/BibtexExporterTests.swift
       - path: ../ios/CurioTests/BookmarkStoreTests.swift
       - path: ../ios/CurioTests/CurioFormatTests.swift
