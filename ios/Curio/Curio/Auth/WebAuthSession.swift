@@ -66,22 +66,19 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
         guard !scheme.isEmpty, url.scheme == "https" || url.scheme == "http" else {
             throw AuthError.presentationFailed
         }
-        let gate = OnceFlag()
+        let gate = CallbackResume<URL>()
+        // The session completion is invoked on Safari's XPC queue. It must not touch
+        // main-actor state: entering a main-actor closure there traps the process.
+        let onCallback: @Sendable (URL?, Error?) -> Void = { callbackURL, error in
+            gate.resume(AuthCallback.interpret(url: callbackURL, error: error))
+        }
+        defer {
+            timeoutTask?.cancel()
+            session = nil
+        }
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            let session = ASWebAuthenticationSession(
-                url: url,
-                callback: .customScheme(scheme)
-            ) { callbackURL, error in
-                // The callback arrives off the main actor (Safari's XPC queue on macOS).
-                // Resuming a main-actor continuation there traps.
-                let result = Self.callbackResult(url: callbackURL, error: error)
-                Task { @MainActor in
-                    guard gate.claim() else { return }
-                    self.timeoutTask?.cancel()
-                    self.session = nil
-                    continuation.resume(with: result)
-                }
-            }
+            gate.store(continuation)
+            let session = ASWebAuthenticationSession(url: url, callback: .customScheme(scheme), completionHandler: onCallback)
 
             session.presentationContextProvider = self
             // iOS uses a private sheet. On macOS the default browser often cannot complete an
@@ -90,11 +87,7 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
 
             self.session = session
             if !session.start() {
-                Task { @MainActor in
-                    guard gate.claim() else { return }
-                    self.session = nil
-                    continuation.resume(throwing: AuthError.presentationFailed)
-                }
+                gate.resume(.failure(AuthError.presentationFailed))
                 return
             }
             timeoutTask = Task { @MainActor in
@@ -103,10 +96,8 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
                 } catch {
                     return
                 }
-                guard gate.claim() else { return }
                 session.cancel()
-                self.session = nil
-                continuation.resume(throwing: AuthError.timedOut)
+                gate.resume(.failure(AuthError.timedOut))
             }
         }
     }
@@ -119,21 +110,7 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
         #endif
     }
 
-    private static func callbackResult(url: URL?, error: Error?) -> Result<URL, Error> {
-        if let url { return .success(url) }
-        if let error = error as? ASWebAuthenticationSessionError {
-            switch error.code {
-            case .canceledLogin:
-                return .failure(AuthError.cancelled)
-            case .presentationContextNotProvided, .presentationContextInvalid:
-                return .failure(AuthError.presentationFailed)
-            default:
-                return .failure(error)
-            }
-        }
-        if let error { return .failure(error) }
-        return .failure(AuthError.cancelled)
-    }
+
 
     // MARK: - ASWebAuthenticationPresentationContextProviding
 
@@ -196,6 +173,53 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
         #else
         return ASPresentationAnchor()
         #endif
+    }
+}
+
+/// Turns the browser callback into a result without touching actor-isolated state.
+enum AuthCallback {
+    nonisolated static func interpret(url: URL?, error: Error?) -> Result<URL, Error> {
+        if let url { return .success(url) }
+        if let error = error as? ASWebAuthenticationSessionError {
+            switch error.code {
+            case .canceledLogin:
+                return .failure(AuthError.cancelled)
+            case .presentationContextNotProvided, .presentationContextInvalid:
+                return .failure(AuthError.presentationFailed)
+            default:
+                return .failure(error)
+            }
+        }
+        if let error { return .failure(error) }
+        return .failure(AuthError.cancelled)
+    }
+}
+
+/// Resumes a continuation at most once, from any queue.
+final class CallbackResume<Success: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Success, Error>?
+    private var resumed = false
+
+    func store(_ continuation: CheckedContinuation<Success, Error>) {
+        lock.lock()
+        let already = resumed
+        if !already { self.continuation = continuation }
+        lock.unlock()
+        if already { continuation.resume(throwing: AuthError.cancelled) }
+    }
+
+    func resume(_ result: Result<Success, Error>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            return
+        }
+        resumed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }
 

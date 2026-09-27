@@ -191,4 +191,36 @@ struct AuthSignInTests {
         #expect(gate.claim())
         #expect(gate.claim() == false)
     }
+
+    @Test("placeholder oauth values are not sent to X")
+    func oauthPlaceholder() {
+        #expect(OAuthSecret.usable("$(CLIENT_ID)") == nil)
+        #expect(OAuthSecret.usable("ROTATE_ME") == nil)
+        #expect(OAuthSecret.usable("  ") == nil)
+        #expect(OAuthSecret.usable("real-client") == "real-client")
+        #expect(OAuthSecret.resolveClientID(local: nil, env: "from-env", baked: "baked") == "from-env")
+        #expect(OAuthSecret.resolveClientID(local: "from-local", env: "from-env", baked: "baked") == "from-local")
+        #expect(OAuthSecret.resolveClientID(local: "ROTATE_ME", env: nil, baked: "baked") == "baked")
+    }
+
+    @Test("the browser callback can resume from a background queue")
+    func callbackResumesOffMainThread() async throws {
+        let gate = CallbackResume<Int>()
+        let value = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
+            gate.store(continuation)
+            DispatchQueue.global(qos: .userInitiated).async {
+                gate.resume(.success(7))
+                gate.resume(.success(9))
+            }
+        }
+        #expect(value == 7)
+        let interpreted = await Task.detached {
+            AuthCallback.interpret(url: URL(string: "curio-oauth://callback?code=1"), error: nil)
+        }.value
+        if case .success(let url) = interpreted {
+            #expect(url.host == "callback")
+        } else {
+            Issue.record("callback interpretation failed off the main actor")
+        }
+    }
 }

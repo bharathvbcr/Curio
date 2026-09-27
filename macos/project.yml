@@ -48,7 +48,7 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: CurioMac/CurioMac.entitlements
     info:
       path: CurioMac/Info.plist
       properties:
@@ -63,6 +63,16 @@ targets:
         link: false
         copy:
           destination: executables
+    postBuildScripts:
+      - name: Inject X OAuth client
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/oauth-client-injected.stamp
+        script: |
+          /usr/bin/python3 "${SRCROOT}/scripts/inject_oauth_client.py"
+          /usr/bin/touch "${DERIVED_FILE_DIR}/oauth-client-injected.stamp"
 
   curio-mcp:
     type: tool
@@ -78,6 +88,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac.mcp
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: CurioMCP/curio-mcp.entitlements
 
   CurioMacTests:
     type: bundle.unit-test
@@ -86,6 +98,15 @@ targets:
     sources:
       - path: ../ios/CurioTests/AgentAPITests.swift
       - path: ../ios/CurioTests/AuthSignInTests.swift
+      - path: CurioMacTests/MacDeskLibraryTests.swift
+      - path: CurioMacTests/MacDeskStressTests.swift
+      - path: ../ios/CurioTests/BibtexExporterTests.swift
+      - path: ../ios/CurioTests/BookmarkStoreTests.swift
+      - path: ../ios/CurioTests/CurioFormatTests.swift
+      - path: ../ios/CurioTests/HardeningTests.swift
+      - path: ../ios/CurioTests/SemanticOrganizerTests.swift
+      - path: ../ios/CurioTests/SpaceRuleTests.swift
+      - path: ../ios/CurioTests/VectorSearchTests.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.curio.mac.tests

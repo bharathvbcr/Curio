@@ -69,3 +69,28 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             -quiet
+
+  macos-ci:
+    name: macOS Test & Build
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen and Generate Project
+        run: |
+          which xcodegen || brew install xcodegen
+          cd macos && xcodegen generate
+
+      - name: Run macOS Unit Tests
+        run: |
+          xcodebuild test \
+            -project macos/CurioMac.xcodeproj \
+            -scheme CurioMac \
+            -destination 'platform=macOS' \
+            -quiet
+
+      - name: Build & Package macOS Release
+        run: |
+          ./macos/scripts/package_mac_release.sh
+

@@ -255,11 +255,15 @@ actor TokenStore {
 
     /// Base query identifying a single generic-password item by service + account.
     private static func baseQuery(account: String) -> [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
     }
 
     /// Reads a UTF-8 string for `account`, or `nil` if absent / unreadable. Resilient (logs +

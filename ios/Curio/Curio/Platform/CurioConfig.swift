@@ -58,8 +58,7 @@ enum CurioConfig {
     /// `BuildConfig.CLIENT_ID.takeIf { it.isNotEmpty() } ?: BuildConfig.X_CLIENT_ID`
     /// maps to this single resolved value.
     static var clientID: String {
-        let secretClientID = plist(Key.clientID) ?? ""
-        if !secretClientID.isEmpty { return secretClientID }
+        if let secretClientID = OAuthSecret.usable(plist(Key.clientID)) { return secretClientID }
         return xClientID
     }
 
@@ -67,8 +66,7 @@ enum CurioConfig {
     /// one Repository call site (`BookmarkRepositoryImpl`) that reads `X_CLIENT_ID` first and only
     /// then falls back to `CLIENT_ID` — the inverse precedence of `clientID`.
     static var xClientID: String {
-        let value = plist(Key.xClientID) ?? ""
-        return value.isEmpty ? defaultXClientID : value
+        OAuthSecret.usable(plist(Key.xClientID)) ?? defaultXClientID
     }
 
     /// Repository-side client-id resolution mirroring `BookmarkRepositoryImpl`:
@@ -84,8 +82,7 @@ enum CurioConfig {
     /// The OAuth2 redirect URI (`BuildConfig.X_REDIRECT_URI`); also the
     /// ASWebAuthenticationSession callback scheme host. Info.plist override else baked default.
     static var xRedirectURI: String {
-        let value = plist(Key.xRedirectURI) ?? ""
-        return value.isEmpty ? defaultXRedirectURI : value
+        OAuthSecret.usable(plist(Key.xRedirectURI)) ?? defaultXRedirectURI
     }
 
 
@@ -99,4 +96,20 @@ enum CurioConfig {
         return URLComponents(string: defaultXRedirectURI)?.scheme ?? "curio-oauth"
     }
 
+}
+
+/// Values that must not be sent to X as a client id or redirect URI.
+enum OAuthSecret {
+    static func usable(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return nil }
+        if value.hasPrefix("$(") || value.hasPrefix("ROTATE") || value.hasPrefix("MY_") { return nil }
+        return value
+    }
+
+    /// Same order as the Android build: a local `X_CLIENT_ID`, then `.env` `CLIENT_ID`, then the baked default.
+    static func resolveClientID(local: String?, env: String?, baked: String) -> String {
+        usable(local) ?? usable(env) ?? baked
+    }
 }

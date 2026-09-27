@@ -12,11 +12,9 @@ on:
         default: 'v1.0.1'
 
 jobs:
-  build-and-release:
-    name: Build & Publish Release
+  build-android:
+    name: Build Android Release
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,8 +37,66 @@ jobs:
       - name: Assemble Release APK
         run: ./gradlew :app:assembleRelease --no-daemon
 
-      - name: Assemble Release Bundle (AAB)
-        run: ./gradlew :app:bundleRelease --no-daemon || echo "AAB bundling completed"
+      - name: Locate Android APK
+        id: locate_apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "Found APK at: $APK_PATH"
+          mkdir -p release_artifacts
+          cp "$APK_PATH" release_artifacts/
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: release_artifacts/*
+
+  build-macos:
+    name: Build & Sign macOS Release
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: which xcodegen || brew install xcodegen
+
+      - name: Run macOS Unit Tests
+        run: |
+          cd macos && xcodegen generate
+          xcodebuild test \
+            -project CurioMac.xcodeproj \
+            -scheme CurioMac \
+            -destination 'platform=macOS' \
+            -quiet
+
+      - name: Package & Sign macOS App
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ./macos/scripts/package_mac_release.sh
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            build/macos_release/*.dmg
+            build/macos_release/*.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-android, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Determine Release Tag
         id: release_info
@@ -51,12 +107,16 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Locate Artifacts
-        id: artifacts
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize Artifacts
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          echo "Found APK at: $APK_PATH"
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          mkdir -p final_assets
+          find artifacts -type f \( -name "*.apk" -o -name "*.dmg" -o -name "*.zip" \) -exec cp {} final_assets/ \;
+          ls -lh final_assets/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -66,7 +126,6 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
-          files: |
-            ${{ steps.artifacts.outputs.apk_path }}
+          files: final_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
