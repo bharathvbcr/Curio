@@ -567,9 +567,27 @@ enum MacAgentPreferences {
     static func enableAccess(_ defaults: UserDefaults = .standard) -> String {
         defaults.set(true, forKey: accessKey)
         if token(defaults).isEmpty {
-            defaults.set(UUID().uuidString, forKey: tokenKey)
+            defaults.set(mintToken(), forKey: tokenKey)
         }
         return token(defaults)
+    }
+
+    /// Replaces the token. Every configured agent stops working until it gets the new one.
+    @discardableResult
+    static func regenerateToken(_ defaults: UserDefaults = .standard) -> String {
+        let fresh = mintToken()
+        defaults.set(fresh, forKey: tokenKey)
+        return fresh
+    }
+
+    /// 256 random bits, hex. Longer than a UUID and with no fixed version nibbles.
+    static func mintToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<4).map { _ in
+            let word = generator.next() as UInt64
+            let hex = String(word, radix: 16)
+            return String(repeating: "0", count: 16 - hex.count) + hex
+        }.joined()
     }
 }
 

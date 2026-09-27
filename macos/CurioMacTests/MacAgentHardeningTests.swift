@@ -474,8 +474,15 @@ final class ListenerRig: Sendable {
         }
     }
 
+    /// Retries a refused connect the way `curio-mcp` does: macOS refuses Unix-socket connects
+    /// once the listen backlog is full instead of queueing them.
     static func exchange(socket: URL, line: String, timeout: TimeInterval) -> String? {
-        let fd = AgentSocketIO.openClient(at: socket)
+        var fd: Int32 = -1
+        for attempt in 0..<40 {
+            fd = AgentSocketIO.openClient(at: socket)
+            if fd >= 0 { break }
+            usleep(useconds_t(min(200_000, 10_000 * (attempt + 1))))
+        }
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         AgentSocketIO.setTimeouts(fd, read: timeout, write: timeout)

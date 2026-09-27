@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Three-column research desk. This Mac keeps its own library, filled by signing in to X.
 /// Notes and stars made on the phone stay on the phone.
@@ -9,10 +11,11 @@ struct MacDeskView: View {
     @AppStorage(MacAgentPreferences.writesKey) private var agentWrites = false
     @AppStorage(MacAgentPreferences.liveKey) private var liveResearch = false
     @AppStorage(MacAgentPreferences.tokenKey) private var agentToken = ""
+    @AppStorage("mac_desk_sort") private var sortRaw = DeskSort.newest.rawValue
 
     @State private var bookmarks: [Bookmark] = []
     @State private var spaces: [Space] = []
-    @State private var selection: String?
+    @State private var selection: Set<String> = []
     @State private var scope: DeskScope = .library
     @State private var query = ""
     @State private var researchQuestion = ""
@@ -23,11 +26,13 @@ struct MacDeskView: View {
     @State private var isSyncing = false
     @State private var isResearching = false
     @State private var epoch = 0
-    @State private var listener: AgentSocketListener?
     @State private var authModel: AuthViewModel?
-    @State private var showingNewSpaceSheet = false
-    @State private var bookmarkToDelete: Bookmark?
+    @State private var spaceEditor: DeskSpaceEditor?
+    @State private var showingNewBookmark = false
+    @State private var pendingDeletion: [Bookmark] = []
     @State private var spaceToDelete: Space?
+
+    private var sort: DeskSort { DeskSort(rawValue: sortRaw) ?? .newest }
 
     private var signedInId: String {
         if case let .signedIn(userId, _, _) = authModel?.authState { return userId }
@@ -48,20 +53,31 @@ struct MacDeskView: View {
     private var orderedSpaces: [Space] { MacDeskLibrary.orderedSpaces(spaces) }
 
     private var visible: [Bookmark] {
-        MacDeskLibrary.visible(bookmarks, scope: scope, query: query)
+        MacDeskLibrary.visible(bookmarks, scope: scope, query: query, sort: sort)
     }
 
-    private var selected: Bookmark? { bookmarks.first { $0.id == selection } }
+    /// Selected bookmarks in list order.
+    private var selectedBookmarks: [Bookmark] {
+        guard !selection.isEmpty else { return [] }
+        return MacDeskLibrary.sorted(bookmarks.filter { selection.contains($0.id) }, by: sort)
+    }
+
+    /// The one bookmark in the reader, when exactly one is selected.
+    private var selected: Bookmark? {
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return bookmarks.first { $0.id == id }
+    }
+
+    private var hasQuery: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var subtitle: String {
         if isSyncing { return "Syncing from X…" }
         if isResearching { return "Researching…" }
         if let statusNote { return statusNote }
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "\(visible.count) of \(MacDeskLibrary.count(bookmarks, scope: scope))"
-        }
-        let count = MacDeskLibrary.count(bookmarks, scope: scope)
-        return count == 1 ? "1 bookmark" : "\(count) bookmarks"
+        if selection.count > 1 { return "\(selection.count) selected" }
+        let total = MacDeskLibrary.count(bookmarks, scope: scope)
+        if hasQuery { return "\(visible.count) of \(total)" }
+        return MacDeskLibrary.counted(total, "bookmark")
     }
 
     var body: some View {
@@ -93,24 +109,41 @@ struct MacDeskView: View {
                 spaces = newSpaces
             }
         }
-        .sheet(isPresented: $showingNewSpaceSheet) {
-            NewSpaceSheet(isPresented: $showingNewSpaceSheet) { name, color, icon in
-                Task { await createSpace(name: name, color: color, icon: icon) }
+        .task(id: statusNote) {
+            // Confirmations fade; errors stay until dismissed.
+            guard let note = statusNote, !statusIsError else { return }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if statusNote == note && !statusIsError { statusNote = nil }
+        }
+        .sheet(item: $spaceEditor) { editor in
+            DeskSpaceSheet(editor: editor, spaces: spaces) { name, color, icon in
+                Task { await saveSpace(editor, name: name, color: color, icon: icon) }
+            }
+            .curioTheme()
+        }
+        .sheet(isPresented: $showingNewBookmark) {
+            DeskNewBookmarkSheet { text in
+                Task { await addBookmark(text) }
             }
             .curioTheme()
         }
         .confirmationDialog(
-            "Delete Bookmark?",
-            isPresented: Binding(get: { bookmarkToDelete != nil }, set: { if !$0 { bookmarkToDelete = nil } }),
-            titleVisibility: .visible,
-            presenting: bookmarkToDelete
-        ) { bookmark in
-            Button("Delete Bookmark", role: .destructive) {
-                Task { await deleteBookmark(bookmark) }
+            pendingDeletion.count > 1 ? "Delete \(pendingDeletion.count) Bookmarks?" : "Delete Bookmark?",
+            isPresented: Binding(get: { !pendingDeletion.isEmpty }, set: { if !$0 { pendingDeletion = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button(pendingDeletion.count > 1 ? "Delete \(pendingDeletion.count) Bookmarks" : "Delete Bookmark", role: .destructive) {
+                let doomed = pendingDeletion
+                pendingDeletion = []
+                Task { await deleteBookmarks(doomed) }
             }
-            Button("Cancel", role: .cancel) { bookmarkToDelete = nil }
-        } message: { bookmark in
-            Text("Are you sure you want to delete “\(MacDeskLibrary.title(bookmark))”? This cannot be undone.")
+            Button("Cancel", role: .cancel) { pendingDeletion = [] }
+        } message: {
+            if pendingDeletion.count == 1, let only = pendingDeletion.first {
+                Text("“\(MacDeskLibrary.title(only))” will be removed from this Mac. This cannot be undone.")
+            } else {
+                Text("They will be removed from this Mac. This cannot be undone.")
+            }
         }
         .confirmationDialog(
             "Delete Space?",
@@ -123,7 +156,7 @@ struct MacDeskView: View {
             }
             Button("Cancel", role: .cancel) { spaceToDelete = nil }
         } message: { space in
-            Text("Are you sure you want to delete “\(space.name)”? Bookmarks in this space will become unfiled.")
+            Text("“\(space.name)” will be deleted. Its bookmarks become unfiled.")
         }
     }
 
@@ -170,39 +203,55 @@ struct MacDeskView: View {
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $query, placement: .toolbar, prompt: "Search bookmarks")
         .toolbar { deskToolbar }
-        .focusedValue(\.macDeskCommands, commandBridge)
+        .focusedSceneValue(\.macDeskCommands, commandBridge)
         .onChange(of: agentAccess) { _, enabled in
             if enabled { agentToken = MacAgentPreferences.enableAccess() }
             startAgentListener()
         }
         .onChange(of: visible.map(\.id)) { _, ids in
-            if let selection, !ids.contains(selection) { self.selection = nil }
+            let kept = MacDeskLibrary.reconciledSelection(selection, visibleIds: ids)
+            if kept != selection { selection = kept }
         }
-        .onChange(of: selection) { _, id in
-            notesDraft = bookmarks.first { $0.id == id }?.notes ?? ""
+        .onChange(of: selection) { old, new in
+            flushNote(leaving: old, for: new)
+            notesDraft = singleBookmark(in: new)?.notes ?? ""
         }
         .onChange(of: spaces.map(\.id)) { _, ids in
             if case let .space(id) = scope, !ids.contains(id) { scope = .library }
         }
+        .task(id: noteAutosaveKey) {
+            // Autosave a paused note so closing the window never loses it.
+            guard let bookmark = selected,
+                  MacDeskLibrary.notesChanged(draft: notesDraft, saved: bookmark.notes) else { return }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await persistNote(notesDraft, for: bookmark.id)
+        }
+    }
+
+    private var noteAutosaveKey: String {
+        "\(selected?.id ?? "")|\(notesDraft)"
     }
 
     private var commandBridge: MacDeskCommands {
         MacDeskCommands(
-            canOpen: selected.flatMap(MacDeskLibrary.link) != nil,
-            canCurate: selected != nil,
-            canDelete: selected != nil,
-            canExport: selected != nil && MacDeskLibrary.link(selected!) != nil,
-            sync: { Task { await sync() } },
+            selectionCount: selection.count,
+            canOpen: selectedBookmarks.contains { MacDeskLibrary.link($0) != nil },
+            canExport: !bookmarks.isEmpty,
+            isSyncing: isSyncing,
+            sort: sort,
+            sync: { Task { await sync(older: false) } },
+            loadOlder: { Task { await sync(older: true) } },
+            newBookmark: { showingNewBookmark = true },
             openLink: { openSelection() },
-            toggleFavorite: { Task { await toggleFavorite() } },
-            toggleLater: { Task { await toggleLater() } },
-            deleteBookmark: {
-                if let selected { bookmarkToDelete = selected }
-            },
-            copyBibtex: {
-                if let selected { copyBibtex(selected) }
-            },
-            newSpace: { showingNewSpaceSheet = true },
+            toggleFavorite: { Task { await setFavorite(selectedBookmarks, next: MacDeskLibrary.bulkFavoriteTarget(selectedBookmarks)) } },
+            toggleLater: { Task { await setLater(selectedBookmarks, next: MacDeskLibrary.bulkLaterTarget(selectedBookmarks)) } },
+            deleteBookmark: { pendingDeletion = selectedBookmarks },
+            copyBibtex: { copyBibtex(selectedBookmarks) },
+            copyLinks: { copyLinks(selectedBookmarks) },
+            export: { format in export(format) },
+            setSort: { sortRaw = $0.rawValue },
+            newSpace: { spaceEditor = .new },
             research: { Task { await research() } },
             signOut: { signOut() }
         )
@@ -212,7 +261,15 @@ struct MacDeskView: View {
     private var deskToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
-                Task { await sync() }
+                showingNewBookmark = true
+            } label: {
+                Label("New Bookmark", systemImage: "plus")
+            }
+            .help("Save a link or a note (⌘N)")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                Task { await sync(older: false) }
             } label: {
                 if isSyncing {
                     ProgressView().controlSize(.small)
@@ -221,8 +278,30 @@ struct MacDeskView: View {
                 }
             }
             .disabled(isSyncing)
-            .help("Pull bookmarks from X")
+            .help("Pull new bookmarks from X (⌘R)")
             .accessibilityIdentifier("mac_sync_button")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                Picker("Sort By", selection: $sortRaw) {
+                    ForEach(DeskSort.allCases) { sort in
+                        Text(sort.label).tag(sort.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Menu("Export \(selection.count > 1 ? "Selection" : MacDeskLibrary.scopeTitle(scope, spaces: spaces))") {
+                    ForEach(DeskExportFormat.allCases) { format in
+                        Button(format.label + "…") { export(format) }
+                    }
+                }
+                .disabled(bookmarks.isEmpty)
+                Button("Load Older from X") { Task { await sync(older: true) } }
+                    .disabled(isSyncing)
+            } label: {
+                Label("View", systemImage: "line.3.horizontal.decrease.circle")
+            }
+            .help("Sort, export, and load more")
         }
         ToolbarItem(placement: .primaryAction) {
             SettingsLink {
@@ -243,18 +322,23 @@ struct MacDeskView: View {
         }
     }
 
+    // MARK: - Sidebar
+
     private var sidebar: some View {
-        List(selection: $scope) {
+        List(selection: Binding<DeskScope?>(get: { scope }, set: { if let next = $0 { scope = next } })) {
             Section("Library") {
                 ForEach(DeskScope.sidebar, id: \.self) { item in
                     Label(MacDeskLibrary.scopeTitle(item, spaces: spaces), systemImage: MacDeskLibrary.scopeSymbol(item, spaces: spaces))
                         .badge(MacDeskLibrary.count(bookmarks, scope: item))
                         .tag(item)
+                        .dropDestination(for: String.self) { ids, _ in
+                            dropped(ids, on: item)
+                        }
                 }
             }
             Section {
                 if orderedSpaces.isEmpty {
-                    Text("No spaces yet. Click + to create one.")
+                    Text("No spaces yet. Click + or drag bookmarks here after creating one.")
                         .font(.caption)
                         .foregroundStyle(colors.onSurfaceVariant)
                         .selectionDisabled()
@@ -263,13 +347,16 @@ struct MacDeskView: View {
                     spaceRow(space)
                         .tag(DeskScope.space(space.id))
                         .contextMenu { spaceMenu(space) }
+                        .dropDestination(for: String.self) { ids, _ in
+                            dropped(ids, on: .space(space.id))
+                        }
                 }
             } header: {
                 HStack {
                     Text("Spaces")
                     Spacer()
                     Button {
-                        showingNewSpaceSheet = true
+                        spaceEditor = .new
                     } label: {
                         Image(systemName: "plus")
                             .font(.caption.weight(.bold))
@@ -321,68 +408,146 @@ struct MacDeskView: View {
             }
         } icon: {
             Image(systemName: spaceIcon(space.icon))
-                .foregroundStyle(Color(packedARGB: space.color))
+                .foregroundStyle(spaceColor(space))
         }
         .badge(MacDeskLibrary.count(bookmarks, scope: .space(space.id)))
     }
 
+    @ViewBuilder
+    private func spaceMenu(_ space: Space) -> some View {
+        Button("Edit Space…") { spaceEditor = .edit(space) }
+        Button(space.isPinned ? "Unpin Space" : "Pin Space") {
+            Task { await togglePinSpace(space) }
+        }
+        Divider()
+        Menu("Export Space") {
+            ForEach(DeskExportFormat.allCases) { format in
+                Button(format.label + "…") {
+                    let members = MacDeskLibrary.visible(bookmarks, scope: .space(space.id), query: "", sort: sort)
+                    export(members, format: format, title: space.name)
+                }
+            }
+        }
+        Divider()
+        Button("Delete Space…", role: .destructive) {
+            spaceToDelete = space
+        }
+    }
+
+    // MARK: - List
+
     private var contentColumn: some View {
-        Group {
-            if visible.isEmpty {
+        let shown = visible
+        return Group {
+            if shown.isEmpty {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: emptySymbol)
                 } description: {
                     Text(emptyMessage)
                 } actions: {
                     if bookmarks.isEmpty {
-                        Button("Sync from X") { Task { await sync() } }
+                        Button("Sync from X") { Task { await sync(older: false) } }
                             .disabled(isSyncing)
-                    } else if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("New Bookmark…") { showingNewBookmark = true }
+                    } else if hasQuery {
                         Button("Clear Search") { query = "" }
                     }
                 }
             } else {
-                List(visible, selection: $selection) { bookmark in
+                List(shown, selection: $selection) { bookmark in
                     DeskBookmarkRow(
                         bookmark: bookmark,
                         spaceName: spaceName(bookmark.spaceId),
                         tint: spaceTint(bookmark)
                     )
-                        .tag(bookmark.id)
-                        .contextMenu { rowMenu(bookmark) }
-                        .accessibilityIdentifier("bookmark_row_\(bookmark.id)")
+                    .tag(bookmark.id)
+                    .draggable(bookmark.id)
+                    .accessibilityIdentifier("bookmark_row_\(bookmark.id)")
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
+                .contextMenu(forSelectionType: String.self) { ids in
+                    rowMenu(ids)
+                } primaryAction: { ids in
+                    for bookmark in bookmarks where ids.contains(bookmark.id) { open(bookmark) }
+                }
+                .copyable(selectedBookmarks.compactMap(MacDeskLibrary.link))
+                .onDeleteCommand { pendingDeletion = selectedBookmarks }
             }
         }
         .navigationTitle(MacDeskLibrary.scopeTitle(scope, spaces: spaces))
         .navigationSubtitle(subtitle)
-        .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 480)
+        .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 520)
     }
 
     private var emptyTitle: String {
         if bookmarks.isEmpty { return "No bookmarks yet" }
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No matches" }
+        if hasQuery { return "No matches" }
         return "Nothing here"
     }
 
     private var emptySymbol: String {
         if bookmarks.isEmpty { return "books.vertical" }
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "magnifyingglass" }
+        if hasQuery { return "magnifyingglass" }
         return MacDeskLibrary.scopeSymbol(scope, spaces: spaces)
     }
 
     private var emptyMessage: String {
         let phrase = MacDeskLibrary.scopePhrase(scope, spaces: spaces)
         if bookmarks.isEmpty {
-            return "Sync from X to fill this Mac. Notes and stars on your iPhone stay on the phone."
+            return "Sync from X to fill this Mac, or save a link yourself. Notes and stars on your iPhone stay on the phone."
         }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             return "Nothing in \(phrase) matches “\(trimmed)”."
         }
+        if case .space = scope {
+            return "No bookmarks in \(phrase). Drag bookmarks onto it in the sidebar to file them."
+        }
         return "No bookmarks in \(phrase)."
     }
+
+    @ViewBuilder
+    private func rowMenu(_ ids: Set<String>) -> some View {
+        let targets = MacDeskLibrary.sorted(bookmarks.filter { ids.contains($0.id) }, by: sort)
+        if !targets.isEmpty {
+            let many = targets.count > 1
+            Button(many ? "Open \(targets.count) Links" : "Open") { targets.forEach(open) }
+                .disabled(!targets.contains { MacDeskLibrary.link($0) != nil })
+            Button(many ? "Copy Links" : "Copy Link") { copyLinks(targets) }
+            if !many, let only = targets.first {
+                Button("Share…") { _ = CurioFormat.shareBookmark(MacDeskLibrary.shareText(only)) }
+            }
+            Divider()
+            let star = MacDeskLibrary.bulkFavoriteTarget(targets)
+            Button(star ? "Star" : "Unstar") { Task { await setFavorite(targets, next: star) } }
+            let later = MacDeskLibrary.bulkLaterTarget(targets)
+            Button(later ? "Read Later" : "Remove from Read Later") { Task { await setLater(targets, next: later) } }
+            Divider()
+            Menu("File into") {
+                Button("Unfiled") { Task { await file(targets, into: nil) } }
+                if !orderedSpaces.isEmpty { Divider() }
+                ForEach(orderedSpaces) { space in
+                    Button(space.name) { Task { await file(targets, into: space.id) } }
+                }
+                Divider()
+                Button("New Space…") { spaceEditor = .newFiling(targets.map(\.id)) }
+            }
+            Divider()
+            Button("Copy BibTeX Citation\(many ? "s" : "")") { copyBibtex(targets) }
+                .disabled(!targets.contains { MacDeskLibrary.bibtexCitation($0) != nil })
+            Menu("Export") {
+                ForEach(DeskExportFormat.allCases) { format in
+                    Button(format.label + "…") { export(targets, format: format, title: many ? "Selection" : MacDeskLibrary.title(targets[0])) }
+                }
+            }
+            Divider()
+            Button(many ? "Delete \(targets.count) Bookmarks…" : "Delete Bookmark…", role: .destructive) {
+                pendingDeletion = targets
+            }
+        }
+    }
+
+    // MARK: - Detail
 
     private var detailColumn: some View {
         VStack(spacing: 0) {
@@ -392,6 +557,7 @@ struct MacDeskView: View {
                     Text(statusNote)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineLimit(3)
+                        .textSelection(.enabled)
                     Button("Dismiss") {
                         self.statusNote = nil
                         statusIsError = false
@@ -404,7 +570,20 @@ struct MacDeskView: View {
                 .background(colors.errorContainer)
                 .foregroundStyle(colors.onErrorContainer)
             }
-            if let bookmark = selected {
+            if selection.count > 1 {
+                DeskBulkPanel(
+                    bookmarks: selectedBookmarks,
+                    spaces: orderedSpaces,
+                    onFavorite: { next in Task { await setFavorite(selectedBookmarks, next: next) } },
+                    onLater: { next in Task { await setLater(selectedBookmarks, next: next) } },
+                    onFile: { spaceId in Task { await file(selectedBookmarks, into: spaceId) } },
+                    onCopyLinks: { copyLinks(selectedBookmarks) },
+                    onCopyBibtex: { copyBibtex(selectedBookmarks) },
+                    onExport: { format in export(format) },
+                    onDelete: { pendingDeletion = selectedBookmarks },
+                    onClear: { selection = [] }
+                )
+            } else if let bookmark = selected {
                 DeskReader(
                     bookmark: bookmark,
                     spaceName: spaceName(bookmark.spaceId),
@@ -414,17 +593,17 @@ struct MacDeskView: View {
                     research: researchResult,
                     isResearching: isResearching,
                     liveResearch: liveResearch,
-                    notesDirty: notesDraft != (bookmark.notes ?? ""),
+                    notesDirty: MacDeskLibrary.notesChanged(draft: notesDraft, saved: bookmark.notes),
                     onOpen: { open(bookmark) },
                     onCopy: { copy(bookmark) },
                     onShare: { _ = CurioFormat.shareBookmark(MacDeskLibrary.shareText(bookmark)) },
-                    onFavorite: { Task { await setFavorite(bookmark, next: !bookmark.isFavorite) } },
-                    onLater: { Task { await setLater(bookmark, next: !bookmark.isSavedForLater) } },
-                    onFile: { spaceId in Task { await file(bookmark, into: spaceId) } },
-                    onSaveNotes: { Task { await saveNotes(bookmark) } },
+                    onFavorite: { Task { await setFavorite([bookmark], next: !bookmark.isFavorite) } },
+                    onLater: { Task { await setLater([bookmark], next: !bookmark.isSavedForLater) } },
+                    onFile: { spaceId in Task { await file([bookmark], into: spaceId) } },
+                    onSaveNotes: { Task { await persistNote(notesDraft, for: bookmark.id) } },
                     onResearch: { Task { await research() } },
-                    onCopyBibtex: { copyBibtex(bookmark) },
-                    onDelete: { bookmarkToDelete = bookmark }
+                    onCopyBibtex: { copyBibtex([bookmark]) },
+                    onDelete: { pendingDeletion = [bookmark] }
                 )
             } else {
                 DeskWelcome(
@@ -444,48 +623,16 @@ struct MacDeskView: View {
 
     private var welcomeMessage: String {
         if bookmarks.isEmpty {
-            return "This Mac keeps its own library. Sign in with X and sync to pull bookmarks from that account. Notes, stars, and embeddings on your iPhone do not come along."
+            return "This Mac keeps its own library. Sync to pull bookmarks from your X account, or press ⌘N to save a link. Notes, stars, and embeddings on your iPhone do not come along."
         }
-        return "Select a bookmark to read it. Research below stays on this Mac unless live web is turned on in Agent settings."
+        return "Select a bookmark to read it, or several to star, file, or export them together. Research below stays on this Mac unless live web is turned on in Agent settings."
     }
 
-    @ViewBuilder
-    private func rowMenu(_ bookmark: Bookmark) -> some View {
-        Button("Open") { open(bookmark) }
-            .disabled(MacDeskLibrary.link(bookmark) == nil)
-        Button("Copy Link") { copy(bookmark) }
-        Button("Share") { _ = CurioFormat.shareBookmark(MacDeskLibrary.shareText(bookmark)) }
-        Divider()
-        Button(bookmark.isFavorite ? "Unstar" : "Star") {
-            Task { await setFavorite(bookmark, next: !bookmark.isFavorite) }
-        }
-        Button(bookmark.isSavedForLater ? "Remove from Read Later" : "Read Later") {
-            Task { await setLater(bookmark, next: !bookmark.isSavedForLater) }
-        }
-        Divider()
-        Menu("File into") {
-            Button("Unfiled") { Task { await file(bookmark, into: nil) } }
-            ForEach(orderedSpaces) { space in
-                Button(space.name) { Task { await file(bookmark, into: space.id) } }
-            }
-        }
-        Divider()
-        Button("Copy BibTeX Citation") { copyBibtex(bookmark) }
-            .disabled(MacDeskLibrary.bibtexCitation(bookmark) == nil)
-        Button("Delete Bookmark", role: .destructive) {
-            bookmarkToDelete = bookmark
-        }
-    }
+    // MARK: - Helpers
 
-    @ViewBuilder
-    private func spaceMenu(_ space: Space) -> some View {
-        Button(space.isPinned ? "Unpin Space" : "Pin Space") {
-            Task { await togglePinSpace(space) }
-        }
-        Divider()
-        Button("Delete Space", role: .destructive) {
-            spaceToDelete = space
-        }
+    private func singleBookmark(in ids: Set<String>) -> Bookmark? {
+        guard ids.count == 1, let id = ids.first else { return nil }
+        return bookmarks.first { $0.id == id }
     }
 
     private func spaceName(_ id: String?) -> String? {
@@ -493,22 +640,28 @@ struct MacDeskView: View {
         return spaces.first { $0.id == id }?.name
     }
 
+    private func spaceColor(_ space: Space) -> Color {
+        (space.color >> 24) & 0xFF == 0 ? colors.primary : Color(packedARGB: space.color)
+    }
+
     private func spaceTint(_ bookmark: Bookmark) -> Color {
-        guard let id = bookmark.spaceId,
-              let space = spaces.first(where: { $0.id == id }),
-              (space.color >> 24) & 0xFF != 0 else {
+        guard let id = bookmark.spaceId, let space = spaces.first(where: { $0.id == id }) else {
             return colors.primary
         }
-        return Color(packedARGB: space.color)
+        return spaceColor(space)
     }
 
     private func startAgentListener() {
         if agentAccess { agentToken = MacAgentPreferences.enableAccess() }
-        if listener == nil {
-            listener = AgentSocketListener(api: environment.makeLibraryAgentAPI())
-        }
-        listener?.start()
+        MacAgentHost.shared.start(environment: environment)
     }
+
+    private func setStatus(_ note: String, error: Bool = false) {
+        statusNote = note
+        statusIsError = error
+    }
+
+    // MARK: - Loading
 
     @discardableResult
     private func reload(ticket: Int? = nil) async -> Bool {
@@ -517,8 +670,7 @@ struct MacDeskView: View {
             guard ticket == nil || ticket == epoch else { return false }
             bookmarks = []
             spaces = []
-            statusNote = "Sign in with X before syncing. This Mac does not see the phone's library."
-            statusIsError = true
+            setStatus("Sign in with X before syncing. This Mac does not see the phone's library.", error: true)
             return false
         }
         let loadedBookmarks = await environment.bookmarkRepository.searchBookmarks(userId: userId, query: "")
@@ -527,42 +679,46 @@ struct MacDeskView: View {
         guard ticket == nil || ticket == epoch else { return false }
         bookmarks = loadedBookmarks
         spaces = loadedSpaces
-        statusNote = nil
-        statusIsError = false
         return true
     }
 
-    private func sync() async {
+    private func sync(older: Bool) async {
         let ticket = epoch
         guard !isSyncing else { return }
         guard let userId = await environment.tokenStore.getUserId() else {
-            statusNote = "Sign in with X before syncing. This Mac does not see the phone's library."
-            statusIsError = true
+            setStatus("Sign in with X before syncing. This Mac does not see the phone's library.", error: true)
             return
         }
+        let before = bookmarks.count
         isSyncing = true
         statusNote = nil
         statusIsError = false
         defer { if ticket == epoch { isSyncing = false } }
         do {
-            try await environment.bookmarkRepository.syncBookmarks(userId: userId, fetchNextPage: false)
+            try await environment.bookmarkRepository.syncBookmarks(userId: userId, fetchNextPage: older)
             guard ticket == epoch else { return }
             guard await reload(ticket: ticket) else { return }
-            statusNote = "Synced from X."
-            statusIsError = false
+            let added = max(0, bookmarks.count - before)
+            if added > 0 {
+                setStatus("Added \(MacDeskLibrary.counted(added, "bookmark")) from X.")
+            } else {
+                setStatus(older ? "No older bookmarks on X." : "Up to date with X.")
+            }
         } catch {
             guard ticket == epoch else { return }
             let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-            statusNote = message.isEmpty ? "Sync failed." : message
-            statusIsError = true
+            setStatus(message.isEmpty ? "Sync failed." : message, error: true)
         }
     }
 
     private func research() async {
         let question = researchQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else {
-            statusNote = "Ask a question first."
-            statusIsError = true
+            setStatus("Ask a question first.", error: true)
+            return
+        }
+        guard question.count <= AgentLimits.maxQuestionCharacters else {
+            setStatus("That question is too long. Keep it under \(AgentLimits.maxQuestionCharacters) characters.", error: true)
             return
         }
         let ticket = epoch
@@ -583,109 +739,263 @@ struct MacDeskView: View {
         let presented = DeskResearchPresentation.from(ok: result.ok, code: result.code, payload: result.payload)
         researchResult = presented
         if let failure = presented.failure {
-            statusNote = failure
-            statusIsError = true
+            setStatus(failure, error: true)
         }
     }
 
+    // MARK: - Reading and copying
+
     private func openSelection() {
-        guard let selected else { return }
-        open(selected)
+        selectedBookmarks.forEach(open)
     }
 
     private func open(_ bookmark: Bookmark) {
         switch CurioFormat.openUrl(MacDeskLibrary.link(bookmark)) {
         case .opened:
-            statusNote = nil
-            statusIsError = false
+            break
         case .noLink:
-            statusNote = "No link on this bookmark."
-            statusIsError = true
+            setStatus("No link on “\(MacDeskLibrary.title(bookmark))”.", error: true)
         case .failed:
-            statusNote = "Couldn’t open the link."
-            statusIsError = true
+            setStatus("Couldn’t open the link.", error: true)
         }
     }
 
     private func copy(_ bookmark: Bookmark) {
         if let link = MacDeskLibrary.link(bookmark) {
-            statusIsError = !CurioFormat.copyToClipboard(link, label: "Curio")
-            statusNote = statusIsError ? "Couldn’t copy the link." : "Copied the link."
+            let ok = CurioFormat.copyToClipboard(link, label: "Curio")
+            setStatus(ok ? "Copied the link." : "Couldn’t copy the link.", error: !ok)
         } else {
             let text = bookmark.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                statusNote = "Nothing to copy."
-                statusIsError = true
+                setStatus("Nothing to copy.", error: true)
                 return
             }
-            statusIsError = !CurioFormat.copyToClipboard(text, label: "Curio")
-            statusNote = statusIsError ? "Couldn’t copy the text." : "Copied the text."
+            let ok = CurioFormat.copyToClipboard(text, label: "Curio")
+            setStatus(ok ? "Copied the text." : "Couldn’t copy the text.", error: !ok)
         }
     }
 
-    private func toggleFavorite() async {
-        guard let selected else { return }
-        await setFavorite(selected, next: !selected.isFavorite)
+    private func copyLinks(_ targets: [Bookmark]) {
+        if targets.count == 1, let only = targets.first {
+            copy(only)
+            return
+        }
+        let links = targets.compactMap(MacDeskLibrary.link)
+        guard !links.isEmpty else {
+            setStatus("None of these bookmarks has a link.", error: true)
+            return
+        }
+        let ok = CurioFormat.copyToClipboard(links.joined(separator: "\n"), label: "Curio")
+        setStatus(ok ? "Copied \(MacDeskLibrary.counted(links.count, "link"))." : "Couldn’t copy the links.", error: !ok)
     }
 
-    private func toggleLater() async {
-        guard let selected else { return }
-        await setLater(selected, next: !selected.isSavedForLater)
+    private func copyBibtex(_ targets: [Bookmark]) {
+        let citations = targets.compactMap(MacDeskLibrary.bibtexCitation)
+        guard !citations.isEmpty else {
+            setStatus(targets.count > 1 ? "None of these bookmarks can be cited." : "No citation available for this bookmark.", error: true)
+            return
+        }
+        let ok = CurioFormat.copyToClipboard(citations.joined(separator: "\n\n"), label: "BibTeX")
+        let noun = MacDeskLibrary.counted(citations.count, "citation")
+        setStatus(ok ? "Copied \(noun)." : "Couldn’t copy BibTeX.", error: !ok)
     }
 
-    private func setFavorite(_ bookmark: Bookmark, next: Bool) async {
-        await mutate(bookmark.id) {
+    // MARK: - Export
+
+    /// The selection when there is one, else what the list shows.
+    private func export(_ format: DeskExportFormat) {
+        if selection.count > 0 {
+            export(selectedBookmarks, format: format, title: selection.count == 1 ? MacDeskLibrary.title(selectedBookmarks[0]) : "Selection")
+        } else {
+            export(visible, format: format, title: MacDeskLibrary.scopeTitle(scope, spaces: spaces))
+        }
+    }
+
+    private func export(_ targets: [Bookmark], format: DeskExportFormat, title: String) {
+        let usable = MacDeskLibrary.exportableCount(targets, format: format)
+        guard usable > 0 else {
+            let reason = format == .ris || format == .cslJson
+                ? "\(format.label) needs resolved papers, repos, or DOIs. Try BibTeX or Markdown."
+                : "Nothing to export."
+            setStatus(reason, error: true)
+            return
+        }
+        let text = MacDeskLibrary.exportText(targets, format: format, spaces: spaces)
+        let panel = NSSavePanel()
+        panel.title = "Export \(format.label)"
+        panel.nameFieldStringValue = MacDeskLibrary.exportFilename(scopeTitle: title, format: format)
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if let type = UTType(filenameExtension: format.fileExtension) {
+            panel.allowedContentTypes = [type]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try Data(text.utf8).write(to: url, options: .atomic)
+            let skipped = targets.count - usable
+            let note = skipped > 0
+                ? "Exported \(MacDeskLibrary.counted(usable, "bookmark")); \(skipped) had nothing to cite."
+                : "Exported \(MacDeskLibrary.counted(usable, "bookmark"))."
+            setStatus(note)
+        } catch {
+            setStatus("Couldn’t write \(url.lastPathComponent): \(error.localizedDescription)", error: true)
+        }
+    }
+
+    // MARK: - Changes
+
+    private func setFavorite(_ targets: [Bookmark], next: Bool) async {
+        guard !targets.isEmpty else { return }
+        for bookmark in targets where bookmark.isFavorite != next {
             await environment.bookmarkRepository.setFavorite(id: bookmark.id, isFavorite: next)
         }
+        await refresh()
+        if targets.count > 1 {
+            setStatus(next ? "Starred \(targets.count)." : "Unstarred \(targets.count).")
+        }
     }
 
-    private func setLater(_ bookmark: Bookmark, next: Bool) async {
-        await mutate(bookmark.id) {
+    private func setLater(_ targets: [Bookmark], next: Bool) async {
+        guard !targets.isEmpty else { return }
+        for bookmark in targets where bookmark.isSavedForLater != next {
             await environment.bookmarkRepository.setSavedForLater(id: bookmark.id, isSavedForLater: next)
         }
-    }
-
-    private func file(_ bookmark: Bookmark, into spaceId: String?) async {
-        await mutate(bookmark.id) {
-            await environment.bookmarkRepository.assignToSpace(ids: [bookmark.id], spaceId: spaceId)
+        await refresh()
+        if targets.count > 1 {
+            setStatus(next ? "Added \(targets.count) to Read Later." : "Removed \(targets.count) from Read Later.")
         }
     }
 
-    private func saveNotes(_ bookmark: Bookmark) async {
-        let trimmed = notesDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let saved = await mutate(bookmark.id) {
-            await environment.bookmarkRepository.updateNotes(id: bookmark.id, notes: trimmed.isEmpty ? nil : trimmed)
+    private func file(_ targets: [Bookmark], into spaceId: String?) async {
+        guard !targets.isEmpty else { return }
+        if let spaceId, !spaces.contains(where: { $0.id == spaceId }) {
+            setStatus("That space no longer exists.", error: true)
+            return
         }
-        if saved {
-            notesDraft = bookmarks.first { $0.id == bookmark.id }?.notes ?? ""
-        }
+        await environment.bookmarkRepository.assignToSpace(ids: targets.map(\.id), spaceId: spaceId)
+        await refresh()
+        let destination = spaceName(spaceId) ?? "Unfiled"
+        setStatus(targets.count > 1 ? "Filed \(targets.count) into \(destination)." : "Filed into \(destination).")
     }
 
-    @discardableResult
-    private func mutate(_ id: String, _ change: @MainActor () async -> Void) async -> Bool {
-        let ticket = epoch
-        await change()
-        guard ticket == epoch else { return false }
-        guard await reload(ticket: ticket) else { return false }
-        selection = id
+    /// Drops from the list: onto a space files, onto Unfiled unfiles, onto Favorites stars, onto
+    /// Read Later queues. Dragging one row of a multi-selection moves the whole selection.
+    private func dropped(_ ids: [String], on target: DeskScope) -> Bool {
+        let dragged = Set(ids)
+        let moving = dragged.isSubset(of: selection) ? selection : dragged
+        let targets = bookmarks.filter { moving.contains($0.id) }
+        guard !targets.isEmpty else { return false }
+        switch target {
+        case .space(let id):
+            Task { await file(targets, into: id) }
+        case .unfiled:
+            Task { await file(targets, into: nil) }
+        case .favorites:
+            Task { await setFavorite(targets, next: true) }
+        case .later:
+            Task { await setLater(targets, next: true) }
+        case .library, .annotated:
+            return false
+        }
         return true
     }
 
-    private func createSpace(name: String, color: Int64, icon: String) async {
+    private func refresh() async {
+        let ticket = epoch
+        await reload(ticket: ticket)
+    }
+
+    /// When the reader moves off a bookmark with an unsaved note, save it rather than drop it.
+    private func flushNote(leaving old: Set<String>, for new: Set<String>) {
+        guard old.count == 1, let previousId = old.first, new != old,
+              let previous = bookmarks.first(where: { $0.id == previousId }),
+              MacDeskLibrary.notesChanged(draft: notesDraft, saved: previous.notes) else { return }
+        let pending = notesDraft
+        Task { await persistNote(pending, for: previousId) }
+    }
+
+    private func persistNote(_ draft: String, for id: String) async {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= AgentLimits.maxNoteCharacters else {
+            setStatus("That note is too long to save. Keep it under \(AgentLimits.maxNoteCharacters) characters.", error: true)
+            return
+        }
+        await environment.bookmarkRepository.updateNotes(id: id, notes: trimmed.isEmpty ? nil : trimmed)
+        await refresh()
+        // Only tidy the draft when the same bookmark is still open and nothing new was typed.
+        if selected?.id == id, notesDraft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+            notesDraft = trimmed
+        }
+    }
+
+    private func addBookmark(_ raw: String) async {
+        guard let text = MacDeskLibrary.normalizedNewBookmark(raw) else {
+            setStatus("Write something or paste a link to save.", error: true)
+            return
+        }
         guard !signedInId.isEmpty else { return }
-        let newSpace = await environment.bookmarkRepository.createSpace(
-            userId: signedInId,
-            name: name,
-            color: color,
-            icon: icon
-        )
-        statusNote = "Created Space “\(newSpace.name)”."
-        statusIsError = false
-        scope = .space(newSpace.id)
+        do {
+            let saved = try await environment.bookmarkRepository.addBookmark(userId: signedInId, text: text)
+            await refresh()
+            if case .space(let id) = scope {
+                await environment.bookmarkRepository.assignToSpace(ids: [saved.id], spaceId: id)
+                await refresh()
+            } else if !MacDeskLibrary.matches(saved, scope: scope) {
+                scope = .library
+            }
+            query = ""
+            selection = [saved.id]
+            setStatus("Saved.")
+        } catch {
+            let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            setStatus(message.isEmpty ? "Couldn’t save the bookmark." : message, error: true)
+        }
+    }
+
+    private func deleteBookmarks(_ targets: [Bookmark]) async {
+        guard !targets.isEmpty else { return }
+        let ids = targets.map(\.id)
+        selection.subtract(ids)
+        await environment.bookmarkRepository.deleteBookmarks(ids: ids)
+        await refresh()
+        setStatus(targets.count > 1 ? "Deleted \(targets.count) bookmarks." : "Deleted bookmark.")
+    }
+
+    private func saveSpace(_ editor: DeskSpaceEditor, name: String, color: Int64, icon: String) async {
+        guard !signedInId.isEmpty else { return }
+        if let problem = MacDeskLibrary.spaceNameProblem(name, existing: spaces, excluding: editor.existing?.id) {
+            setStatus(problem, error: true)
+            return
+        }
+        guard let clean = MacDeskLibrary.normalizedSpaceName(name) else { return }
+        switch editor {
+        case .edit(let space):
+            // Keep what this sheet does not edit: description, rules, and pin.
+            await environment.bookmarkRepository.updateSpace(
+                id: space.id,
+                name: clean,
+                color: color,
+                icon: icon,
+                description: space.description,
+                rules: space.rules,
+                isPinned: space.isPinned
+            )
+            await refresh()
+            setStatus("Updated “\(clean)”.")
+        case .new, .newFiling:
+            let created = await environment.bookmarkRepository.createSpace(userId: signedInId, name: clean, color: color, icon: icon)
+            if case .newFiling(let ids) = editor, !ids.isEmpty {
+                await environment.bookmarkRepository.assignToSpace(ids: ids, spaceId: created.id)
+            }
+            await refresh()
+            setStatus("Created “\(created.name)”.")
+            scope = .space(created.id)
+        }
     }
 
     private func togglePinSpace(_ space: Space) async {
         await environment.bookmarkRepository.setSpacePinned(id: space.id, pinned: !space.isPinned)
+        await refresh()
     }
 
     private func deleteSpace(_ space: Space) async {
@@ -693,36 +1003,25 @@ struct MacDeskView: View {
             scope = .library
         }
         await environment.bookmarkRepository.deleteSpace(id: space.id)
-        statusNote = "Deleted Space “\(space.name)”."
-        statusIsError = false
-    }
-
-    private func deleteBookmark(_ bookmark: Bookmark) async {
-        let id = bookmark.id
-        if selection == id { selection = nil }
-        await environment.bookmarkRepository.deleteBookmarks(ids: [id])
-        statusNote = "Deleted bookmark."
-        statusIsError = false
-    }
-
-    private func copyBibtex(_ bookmark: Bookmark) {
-        guard let citation = MacDeskLibrary.bibtexCitation(bookmark) else {
-            statusNote = "No citation available for this bookmark."
-            statusIsError = true
-            return
-        }
-        statusIsError = !CurioFormat.copyToClipboard(citation, label: "BibTeX")
-        statusNote = statusIsError ? "Couldn’t copy BibTeX." : "Copied BibTeX citation."
+        await refresh()
+        setStatus("Deleted “\(space.name)”.")
     }
 
     private func signOut() {
+        if let bookmark = selected, MacDeskLibrary.notesChanged(draft: notesDraft, saved: bookmark.notes) {
+            let pending = notesDraft
+            let id = bookmark.id
+            let repository = environment.bookmarkRepository
+            let trimmed = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+            Task { await repository.updateNotes(id: id, notes: trimmed.isEmpty ? nil : trimmed) }
+        }
         epoch += 1
         isSyncing = false
         isResearching = false
         authModel?.onLogout()
         bookmarks = []
         spaces = []
-        selection = nil
+        selection = []
         scope = .library
         query = ""
         researchQuestion = ""
@@ -730,562 +1029,27 @@ struct MacDeskView: View {
         notesDraft = ""
         statusNote = nil
         statusIsError = false
+        pendingDeletion = []
+        spaceEditor = nil
     }
 }
 
-// MARK: - Rows and the reading pane
+/// Which space sheet is showing. `newFiling` files the given bookmarks into the new space.
+enum DeskSpaceEditor: Identifiable {
+    case new
+    case newFiling([String])
+    case edit(Space)
 
-private struct DeskBookmarkRow: View {
-    let bookmark: Bookmark
-    let spaceName: String?
-    let tint: Color
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tint.opacity(0.16))
-                Image(systemName: MacDeskLibrary.symbol(for: bookmark))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            .frame(width: 32, height: 32)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(MacDeskLibrary.title(bookmark))
-                        .curioText(CurioFont.titleSmall)
-                        .foregroundStyle(colors.onSurface)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text(CurioFormat.relativeTime(bookmark.createdAt))
-                        .font(.caption)
-                        .foregroundStyle(colors.onSurfaceVariant)
-                }
-                let excerpt = MacDeskLibrary.excerpt(bookmark)
-                if !excerpt.isEmpty {
-                    Text(excerpt)
-                        .font(.system(size: 13))
-                        .foregroundStyle(colors.onSurfaceVariant)
-                        .lineLimit(2)
-                }
-                meta
-            }
-
-            if bookmark.isFavorite || bookmark.isSavedForLater {
-                VStack(spacing: 4) {
-                    if bookmark.isFavorite {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(colors.tertiary)
-                            .accessibilityLabel("Starred")
-                    }
-                    if bookmark.isSavedForLater {
-                        Image(systemName: "bookmark.fill")
-                            .foregroundStyle(colors.secondary)
-                            .accessibilityLabel("Read later")
-                    }
-                }
-                .font(.caption2)
-            }
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(MacDeskLibrary.accessibilityLabel(bookmark, spaceName: spaceName))
-    }
-
-    private var meta: some View {
-        HStack(spacing: 6) {
-            if let byline = MacDeskLibrary.byline(bookmark) {
-                Text(byline)
-            }
-            if let host = MacDeskLibrary.host(bookmark) {
-                Text(host)
-            }
-            if let spaceName {
-                Text(spaceName)
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(colors.primary)
-        .lineLimit(1)
-    }
-}
-
-private struct DeskReader: View {
-    let bookmark: Bookmark
-    let spaceName: String?
-    let spaces: [Space]
-    @Binding var notesDraft: String
-    @Binding var question: String
-    let research: DeskResearchPresentation?
-    let isResearching: Bool
-    let liveResearch: Bool
-    let notesDirty: Bool
-    let onOpen: () -> Void
-    let onCopy: () -> Void
-    let onShare: () -> Void
-    let onFavorite: () -> Void
-    let onLater: () -> Void
-    let onFile: (String?) -> Void
-    let onSaveNotes: () -> Void
-    let onResearch: () -> Void
-    let onCopyBibtex: () -> Void
-    let onDelete: () -> Void
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                actions
-                if let imageURL {
-                    AsyncImage(url: imageURL) { phase in
-                        if case let .success(image) = phase {
-                            image
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 280)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .accessibilityLabel(bookmark.imageAltText ?? "Bookmark image")
-                        }
-                    }
-                }
-                if let summary = MacDeskLibrary.nonempty(bookmark.summary) {
-                    Text(summary)
-                        .curioText(CurioFont.bodyMedium)
-                        .foregroundStyle(colors.onPrimaryContainer)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .background(colors.primaryContainer.opacity(0.65), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                if !bookmark.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MarkdownText(markdown: bookmark.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if !bookmark.tags.isEmpty {
-                    Text(bookmark.tags.prefix(8).joined(separator: "  ·  "))
-                        .font(.caption)
-                        .foregroundStyle(colors.primary)
-                }
-                disclosures
-                notes
-                DeskResearchCard(
-                    question: $question,
-                    research: research,
-                    isResearching: isResearching,
-                    liveResearch: liveResearch,
-                    onResearch: onResearch
-                )
-            }
-            .padding(28)
-            .frame(maxWidth: 740, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    var id: String {
+        switch self {
+        case .new: return "new"
+        case .newFiling(let ids): return "new-" + ids.joined(separator: ",")
+        case .edit(let space): return "edit-" + space.id
         }
     }
 
-    private var imageURL: URL? {
-        guard let raw = MacDeskLibrary.nonempty(bookmark.imageUrl) else { return nil }
-        return URL(string: raw)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let eyebrow = spaceName ?? MacDeskLibrary.sourceLabel(bookmark.sourceType) {
-                Text(eyebrow)
-                    .curioText(CurioFont.labelSmall)
-                    .textCase(.uppercase)
-                    .foregroundStyle(colors.primary)
-            }
-            Text(MacDeskLibrary.title(bookmark))
-                .curioText(CurioFont.headlineMedium)
-                .foregroundStyle(colors.onBackground)
-                .textSelection(.enabled)
-            if let byline = MacDeskLibrary.byline(bookmark) {
-                Text(byline)
-                    .curioText(CurioFont.bodyMedium)
-                    .foregroundStyle(colors.onSurfaceVariant)
-            }
-            Text(MacDeskLibrary.metaParts(bookmark).joined(separator: "  ·  "))
-                .font(.caption)
-                .foregroundStyle(colors.onSurfaceVariant)
-            if let authors = MacDeskLibrary.nonempty(bookmark.sourceAuthors) {
-                Text(authors)
-                    .font(.callout)
-                    .foregroundStyle(colors.onSurfaceVariant)
-            }
-            if bookmark.referenceCount > 1 {
-                Text("\(bookmark.referenceCount) posts point at this source.")
-                    .font(.caption)
-                    .foregroundStyle(colors.onSurfaceVariant)
-            }
-        }
-    }
-
-    private var actions: some View {
-        HStack(spacing: 8) {
-            Button(action: onOpen) {
-                Label("Open", systemImage: "arrow.up.right.square")
-            }
-            .disabled(MacDeskLibrary.link(bookmark) == nil)
-            .accessibilityIdentifier("mac_open_button")
-
-            Button(action: onCopy) {
-                Image(systemName: "link")
-            }
-            .help("Copy link")
-            .accessibilityLabel("Copy link")
-
-            Button(action: onShare) {
-                Image(systemName: "square.and.arrow.up")
-            }
-            .help("Share")
-            .accessibilityLabel("Share")
-
-            Menu {
-                Button("Unfiled") { onFile(nil) }
-                if !spaces.isEmpty { Divider() }
-                ForEach(spaces) { space in
-                    Button {
-                        onFile(space.id)
-                    } label: {
-                        if bookmark.spaceId == space.id {
-                            Label(space.name, systemImage: "checkmark")
-                        } else {
-                            Text(space.name)
-                        }
-                    }
-                }
-            } label: {
-                Label(spaceName ?? "Unfiled", systemImage: "folder")
-            }
-            .menuStyle(.button)
-            .help("File into a space")
-
-            Spacer(minLength: 8)
-
-            Button(action: onFavorite) {
-                Image(systemName: bookmark.isFavorite ? "star.fill" : "star")
-            }
-            .foregroundStyle(bookmark.isFavorite ? colors.tertiary : colors.onSurface)
-            .help(bookmark.isFavorite ? "Unstar" : "Star")
-            .accessibilityLabel(bookmark.isFavorite ? "Unstar" : "Star")
-
-            Button(action: onLater) {
-                Image(systemName: bookmark.isSavedForLater ? "bookmark.fill" : "bookmark")
-            }
-            .help(bookmark.isSavedForLater ? "Remove from Read Later" : "Read later")
-            .accessibilityLabel(bookmark.isSavedForLater ? "Remove from Read Later" : "Read later")
-
-            Button(action: onCopyBibtex) {
-                Image(systemName: "quote.opening")
-            }
-            .help("Copy BibTeX citation")
-            .accessibilityLabel("Copy BibTeX citation")
-            .disabled(MacDeskLibrary.bibtexCitation(bookmark) == nil)
-
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-            }
-            .foregroundStyle(colors.error)
-            .help("Delete bookmark")
-            .accessibilityLabel("Delete bookmark")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-    }
-
-    @ViewBuilder
-    private var disclosures: some View {
-        if let ocr = MacDeskLibrary.nonempty(bookmark.ocrText) {
-            DisclosureGroup("Text from the image") {
-                Text(ocr)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
-            }
-        }
-        if let deep = MacDeskLibrary.nonempty(bookmark.deepSummary),
-           !deep.hasPrefix("{"), !deep.hasPrefix("[") {
-            DisclosureGroup("Closer read") {
-                MarkdownText(markdown: deep)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
-            }
-        }
-        if let abstract = MacDeskLibrary.nonempty(bookmark.sourceAbstract), abstract != bookmark.text {
-            DisclosureGroup("Source abstract") {
-                Text(abstract)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
-            }
-        }
-    }
-
-    private var notes: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Note")
-                .curioText(CurioFont.labelSmall)
-                .textCase(.uppercase)
-                .foregroundStyle(colors.primary)
-            TextEditor(text: $notesDraft)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .frame(height: 108)
-                .background(colors.surfaceVariant, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            HStack {
-                Text("Notes stay on this Mac.")
-                    .font(.caption)
-                    .foregroundStyle(colors.onSurfaceVariant)
-                Spacer()
-                Button("Save Note", action: onSaveNotes)
-                    .disabled(!notesDirty)
-                    .controlSize(.small)
-            }
-        }
-    }
-}
-
-private struct DeskWelcome: View {
-    let title: String
-    let message: String
-    let summary: String
-    @Binding var question: String
-    let research: DeskResearchPresentation?
-    let isResearching: Bool
-    let liveResearch: Bool
-    let onResearch: () -> Void
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("CURIO")
-                        .curioText(CurioFont.labelSmall)
-                        .textCase(.uppercase)
-                        .foregroundStyle(colors.primary)
-                    Text(title)
-                        .curioText(CurioFont.headlineLarge)
-                        .foregroundStyle(colors.onBackground)
-                    Text(message)
-                        .curioText(CurioFont.bodyLarge)
-                        .foregroundStyle(colors.onSurfaceVariant)
-                        .frame(maxWidth: 560, alignment: .leading)
-                    Text(summary)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(colors.onSurface)
-                        .padding(.top, 4)
-                }
-                DeskResearchCard(
-                    question: $question,
-                    research: research,
-                    isResearching: isResearching,
-                    liveResearch: liveResearch,
-                    onResearch: onResearch
-                )
-            }
-            .padding(32)
-            .frame(maxWidth: 740, alignment: .leading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-    }
-}
-
-private struct DeskResearchCard: View {
-    @Binding var question: String
-    let research: DeskResearchPresentation?
-    let isResearching: Bool
-    let liveResearch: Bool
-    let onResearch: () -> Void
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Research")
-                    .curioText(CurioFont.labelSmall)
-                    .textCase(.uppercase)
-                    .foregroundStyle(colors.primary)
-                Spacer()
-                Text(liveResearch ? "Includes the live web" : "Uses this Mac only")
-                    .font(.caption)
-                    .foregroundStyle(colors.onSurfaceVariant)
-            }
-            TextField("Ask about something in this library", text: $question, axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.plain)
-                .padding(12)
-                .background(colors.surfaceVariant, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            HStack {
-                Button(action: onResearch) {
-                    if isResearching {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Research")
-                    }
-                }
-                .disabled(isResearching || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("mac_research_button")
-                Spacer()
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
-            if let research {
-                if let failure = research.failure {
-                    Text(failure)
-                        .curioText(CurioFont.bodyMedium)
-                        .foregroundStyle(colors.error)
-                } else if research.hasBody {
-                    if !research.answer.isEmpty {
-                        Text(research.answer)
-                            .curioText(CurioFont.bodyMedium)
-                            .foregroundStyle(colors.onSurface)
-                            .textSelection(.enabled)
-                    }
-                    if !research.caveats.isEmpty {
-                        Text(research.caveats)
-                            .font(.callout)
-                            .foregroundStyle(colors.onSurfaceVariant)
-                            .textSelection(.enabled)
-                    }
-                    if !research.readingList.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Reading")
-                                .curioText(CurioFont.labelSmall)
-                                .textCase(.uppercase)
-                                .foregroundStyle(colors.primary)
-                            ForEach(Array(research.readingList.enumerated()), id: \.offset) { _, item in
-                                Text(item)
-                                    .font(.callout)
-                                    .foregroundStyle(colors.onSurface)
-                            }
-                        }
-                    }
-                    if !research.citations.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(research.citations.enumerated()), id: \.offset) { _, url in
-                                Button(url) { _ = CurioFormat.openUrl(url) }
-                                    .buttonStyle(.link)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                } else {
-                    Text("No answer came back.")
-                        .foregroundStyle(colors.onSurfaceVariant)
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(colors.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(colors.outline.opacity(0.45), lineWidth: 1)
-        )
-    }
-}
-
-// MARK: - New Space Sheet
-
-private struct NewSpaceSheet: View {
-    @Binding var isPresented: Bool
-    let onCreate: (String, Int64, String) -> Void
-
-    @State private var name: String = ""
-    @State private var selectedColor: Int64 = MacDeskLibrary.spaceColorPalette.first?.color ?? 0xFF1E88E5
-    @State private var selectedIcon: String = MacDeskLibrary.spaceIcons.first ?? "folder"
-
-    @Environment(\.curioColors) private var colors
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("New Space")
-                .curioText(CurioFont.headlineSmall)
-                .foregroundStyle(colors.onSurface)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Name")
-                    .curioText(CurioFont.labelLarge)
-                    .foregroundStyle(colors.onSurfaceVariant)
-                TextField("Space name", text: $name)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Color")
-                    .curioText(CurioFont.labelLarge)
-                    .foregroundStyle(colors.onSurfaceVariant)
-                HStack(spacing: 10) {
-                    ForEach(MacDeskLibrary.spaceColorPalette, id: \.color) { item in
-                        Circle()
-                            .fill(Color(packedARGB: item.color))
-                            .frame(width: 22, height: 22)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(colors.onSurface, lineWidth: selectedColor == item.color ? 2.5 : 0)
-                            )
-                            .contentShape(Circle())
-                            .onTapGesture {
-                                selectedColor = item.color
-                            }
-                            .help(item.name)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Icon")
-                    .curioText(CurioFont.labelLarge)
-                    .foregroundStyle(colors.onSurfaceVariant)
-                HStack(spacing: 12) {
-                    ForEach(MacDeskLibrary.spaceIcons, id: \.self) { icon in
-                        Image(systemName: icon)
-                            .font(.system(size: 16))
-                            .frame(width: 28, height: 28)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(selectedIcon == icon ? colors.primaryContainer : Color.clear)
-                            )
-                            .foregroundStyle(selectedIcon == icon ? colors.primary : colors.onSurfaceVariant)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedIcon = icon
-                            }
-                    }
-                }
-            }
-
-            HStack {
-                Button("Cancel") {
-                    isPresented = false
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button("Create Space") {
-                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    onCreate(trimmed, selectedColor, selectedIcon)
-                    isPresented = false
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding(.top, 8)
-        }
-        .padding(24)
-        .frame(width: 380)
+    var existing: Space? {
+        if case .edit(let space) = self { return space }
+        return nil
     }
 }

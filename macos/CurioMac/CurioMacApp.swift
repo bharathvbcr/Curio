@@ -14,7 +14,6 @@ struct CurioMacApp: App {
         .defaultSize(width: 1240, height: 800)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
-            CommandGroup(replacing: .newItem) {}
             MacDeskMenuCommands()
         }
 

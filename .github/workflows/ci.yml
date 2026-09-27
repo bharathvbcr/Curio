@@ -88,11 +88,12 @@ jobs:
 
       - name: Run macOS Unit Tests
         run: |
+          set -o pipefail
           xcodebuild test \
             -project macos/CurioMac.xcodeproj \
             -scheme CurioMac \
-            -destination 'platform=macOS' \
-            -quiet
+            -destination 'platform=macOS,arch=arm64' \
+            2>&1 | grep -vE '^(CompileSwift|SwiftCompile|SwiftDriver|Ld |CodeSign|ProcessInfoPlistFile|CpResource|Copy|Touch|RegisterExecutionPolicyException|Validate|note:|builtin-|    cd |    /Applications|    export )' 
 
       - name: Build & Package macOS Release
         run: |
