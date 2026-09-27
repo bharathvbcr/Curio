@@ -82,7 +82,7 @@ if [ -f "${HELPER_BIN}" ]; then
 fi
 
 # 4b. Sign any embedded frameworks/dylibs if present
-find "${BUILT_APP}/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.framework" \) 2>/dev/null | while read -r item; do
+find "${BUILT_APP}/Contents/Frameworks" -mindepth 1 -maxdepth 1 \( -name "*.dylib" -o -name "*.framework" \) 2>/dev/null | while read -r item; do
     echo "Signing framework: $(basename "${item}")"
     codesign --force \
         --options runtime \

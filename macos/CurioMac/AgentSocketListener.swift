@@ -156,7 +156,8 @@ final class AgentSocketListener: @unchecked Sendable {
     /// tool task, write (bounded by the write timeout), close.
     private func serve(_ client: Int32) {
         defer { finish(client) }
-        guard let line = AgentSocketIO.readLine(fd: client, maxBytes: Self.maxRequestBytes) else { return }
+        let deadline = Date().addingTimeInterval(readTimeout)
+        guard let line = AgentSocketIO.readLine(fd: client, maxBytes: Self.maxRequestBytes, deadline: deadline) else { return }
         let reply = ReplyBox()
         let done = DispatchSemaphore(value: 0)
         Task.detached { [self] in

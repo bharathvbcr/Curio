@@ -38,6 +38,48 @@ struct MacAgentHardeningTests {
         #expect(served.contains("\"ok\":true"))
     }
 
+    @Test("a client that trickles bytes is cut off at the deadline")
+    func slowLoris() async throws {
+        let rig = try ListenerRig(readTimeout: 0.5)
+        defer { rig.tearDown() }
+        let socket = rig.socket
+        let started = Date()
+        let reply: String? = await ListenerRig.onThread {
+            let fd = AgentSocketIO.openClient(at: socket)
+            guard fd >= 0 else { return "no connect" }
+            defer { close(fd) }
+            AgentSocketIO.setTimeouts(fd, read: 5, write: 5)
+            // One byte every 150 ms never trips a per-call timeout of 500 ms.
+            for byte in Array("{\"token\":\"tok\",\"tool\":\"library_overview\"}".utf8) {
+                var value = byte
+                if send(fd, &value, 1, testSendFlags) != 1 { break }
+                usleep(150_000)
+                if Date().timeIntervalSince(started) > 3 { break }
+            }
+            return AgentSocketIO.readLine(fd: fd)
+        }
+        #expect(reply == nil)
+        #expect(Date().timeIntervalSince(started) < 4.5)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(rig.listener.activeConnections == 0)
+    }
+
+    @Test("half a request followed by a hang-up frees the slot")
+    func halfLineThenClose() async throws {
+        let rig = try ListenerRig(readTimeout: 2)
+        defer { rig.tearDown() }
+        for _ in 0..<50 {
+            let fd = AgentSocketIO.openClient(at: rig.socket)
+            try #require(fd >= 0)
+            var bytes = Array("{\"token\":\"tok\",\"to".utf8)
+            _ = send(fd, &bytes, bytes.count, testSendFlags)
+            close(fd)
+        }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(rig.listener.activeConnections == 0)
+        #expect(try rig.call(tool: "library_overview").contains("\"ok\":true"))
+    }
+
     @Test("an oversized request is dropped and the listener keeps serving")
     func oversizedRequest() async throws {
         let rig = try ListenerRig()
@@ -364,6 +406,13 @@ struct MacAgentHardeningTests {
 }
 
 // MARK: - Test doubles
+
+/// Raw sends in these tests must not raise SIGPIPE when the listener hangs up first.
+#if canImport(Darwin)
+let testSendFlags: Int32 = 0
+#else
+let testSendFlags = Int32(MSG_NOSIGNAL)
+#endif
 
 final class HardeningLibrary: AgentLibrary, @unchecked Sendable {
     private let lock = NSLock()

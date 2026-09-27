@@ -87,13 +87,16 @@ enum AgentSocketIO {
     /// One newline-delimited message. A line past `maxBytes` is discarded and consumed,
     /// so the next call still starts on a message boundary. Bytes after the newline stay
     /// in the socket for the next call. Invalid UTF-8, a timeout, or EOF before any byte is nil.
-    static func readLine(fd: Int32, maxBytes: Int = 8_000_000) -> String? {
+    /// `deadline` bounds the whole line, so a peer that trickles one byte at a time cannot
+    /// outlast the per-call socket timeout.
+    static func readLine(fd: Int32, maxBytes: Int = 8_000_000, deadline: Date? = nil) -> String? {
         var buffer: [UInt8] = []
         buffer.reserveCapacity(256)
         var overflow = false
         var chunk = [UInt8](repeating: 0, count: 4096)
         var canPeek = true
         while true {
+            if let deadline, Date() >= deadline { return nil }
             // Peek first so the read stops exactly at the newline; fall back to single bytes
             // when `fd` is not a socket.
             var take = 1

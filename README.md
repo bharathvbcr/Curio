@@ -125,6 +125,26 @@ The Android and iOS codebases are built in parallel, mapping corresponding platf
 
 > **BYOK (Bring Your Own Key):** To keep credentials secure, the xAI API key and Hugging Face tokens are provided by the user in the app's **Settings** screen at runtime and stored locally in the **Keychain**, rather than embedded in the codebase.
 
+### macOS desk
+
+**Prerequisites:** macOS 26 with Xcode 26+ and XcodeGen.
+
+```bash
+cd macos && xcodegen generate
+xcodebuild test -project CurioMac.xcodeproj -scheme CurioMac -destination 'platform=macOS'
+./scripts/package_mac_release.sh   # signed .app, .zip, and .dmg in build/macos_release
+```
+
+The Mac app keeps its own library, filled by signing in to X. It offers:
+
+- Three-column desk with sorting, search, and scopes (All, Favorites, Read Later, Unfiled, With Notes, Spaces).
+- Multi-select bulk actions: star, read later, file, copy links or BibTeX, export, delete.
+- New bookmarks (⌘N), Load Older from X (⇧⌘R), drag bookmarks onto spaces, edit spaces.
+- Export as Markdown, BibTeX, RIS, CSL-JSON, a full JSON backup, or CSV.
+- Notes that autosave, and on-device research over the library.
+
+**Agents (MCP).** In **Settings → Agents** turn on access and copy the configuration into an MCP client. The embedded `curio-mcp` helper speaks MCP over stdio and forwards each call to the running app over a user-only Unix socket. Every call needs the token; writes need a second switch; live web research needs a third. Tools advertise full JSON schemas, and the settings pane shows recent agent activity (arguments are stored only as a hash). Regenerating the token disconnects every agent.
+
 ## Secrets & Security
 
 `.env`, `local.properties`, `GoogleService-Info.plist`, and keystores are gitignored and must never be committed. To enforce this, enable the bundled commit guard:
