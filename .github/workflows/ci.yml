@@ -40,13 +40,14 @@ jobs:
 
   ios-ci:
     name: iOS Test & Build
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install XcodeGen and Generate Project
         run: |
+          xcodebuild -version
           which xcodegen || brew install xcodegen
           cd ios && xcodegen generate
 
@@ -72,13 +73,14 @@ jobs:
 
   macos-ci:
     name: macOS Test & Build
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install XcodeGen and Generate Project
         run: |
+          xcodebuild -version
           which xcodegen || brew install xcodegen
           cd macos && xcodegen generate
 

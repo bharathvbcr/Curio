@@ -54,13 +54,15 @@ jobs:
 
   build-macos:
     name: Build & Sign macOS Release
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install XcodeGen
-        run: which xcodegen || brew install xcodegen
+        run: |
+          xcodebuild -version
+          which xcodegen || brew install xcodegen
 
       - name: Run macOS Unit Tests
         run: |
