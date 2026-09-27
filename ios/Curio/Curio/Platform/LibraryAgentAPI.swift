@@ -21,6 +21,19 @@ struct ResearchCard: Sendable, Equatable, Codable {
 enum AgentLookup {
     static func clampLimit(_ limit: Int) -> Int { min(max(limit, 1), 50) }
 
+    /// Trimmed, non-empty, first occurrence wins.
+    static func distinctIds(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in ids {
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if id.isEmpty || seen.contains(id) { continue }
+            seen.insert(id)
+            result.append(id)
+        }
+        return result
+    }
+
     static func contains(_ field: String?, _ query: String) -> Bool {
         guard let field, !query.isEmpty else { return false }
         return field.range(of: query, options: [.caseInsensitive]) != nil
@@ -98,8 +111,22 @@ protocol AgentLibrary: Sendable {
     func updateNotes(id: String, notes: String?) async
     func setFavorite(id: String, isFavorite: Bool) async
     func assignToSpace(ids: [String], spaceId: String?) async
+    func setSavedForLater(id: String, isSavedForLater: Bool) async
     func saveResearch(_ card: ResearchCard) async throws
     func researchCard(id: String) async -> ResearchCard?
+}
+
+extension AgentLibrary {
+    /// Libraries that predate Read Later for agents keep compiling; the tool then changes nothing.
+    func setSavedForLater(id: String, isSavedForLater: Bool) async {}
+}
+
+/// Bounds on what an agent can write in one call.
+enum AgentLimits {
+    static let maxBookmarkCharacters = 100_000
+    static let maxNoteCharacters = 20_000
+    static let maxIdsPerCall = 500
+    static let maxQuestionCharacters = 4_000
 }
 
 struct LibraryAgentAPI: Sendable {
@@ -175,6 +202,8 @@ struct LibraryAgentAPI: Sendable {
             return await addNote(id: args.string("id") ?? "", note: args.string("note") ?? "")
         case "set_favorite":
             return await setFavorite(id: args.string("id") ?? "", favorite: args.bool("favorite") ?? true)
+        case "set_read_later":
+            return await setReadLater(id: args.string("id") ?? "", later: args.bool("later") ?? args.bool("readLater") ?? true)
         case "file_in_space":
             return await file(ids: args.strings("ids"), spaceId: args.string("spaceId"))
         case "save_research":
@@ -254,9 +283,16 @@ struct LibraryAgentAPI: Sendable {
     }
 
     private func getBookmark(id: String) async -> AgentToolResult {
-        guard await library.currentUserId() != nil else { return .failure(.notSignedIn) }
-        guard let bookmark = await library.bookmark(id: id) else { return .failure(.unknownTool, payload: "not_found") }
+        guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        guard let bookmark = await ownedBookmark(id: id, userId: userId) else { return .failure(.notFound, payload: "not_found") }
         return .success(AgentJSON.bookmark(bookmark))
+    }
+
+    /// A bookmark this signed-in user owns. Another account's rows on the same device are invisible.
+    private func ownedBookmark(id: String, userId: String) async -> Bookmark? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let bookmark = await library.bookmark(id: trimmed), bookmark.userId == userId else { return nil }
+        return bookmark
     }
 
     private func listSpaces() async -> AgentToolResult {
@@ -317,6 +353,12 @@ struct LibraryAgentAPI: Sendable {
     private func saveBookmark(text: String) async -> AgentToolResult {
         if let denied = await requireWrites() { return denied }
         guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .failure(.invalidArguments, payload: "text is empty") }
+        guard trimmed.count <= AgentLimits.maxBookmarkCharacters else {
+            return .failure(.invalidArguments, payload: "text is longer than \(AgentLimits.maxBookmarkCharacters) characters")
+        }
+        let text = trimmed
         do {
             let saved = try await library.addBookmark(userId: userId, text: text)
             return .success(AgentJSON.bookmark(saved))
@@ -327,24 +369,66 @@ struct LibraryAgentAPI: Sendable {
 
     private func addNote(id: String, note: String) async -> AgentToolResult {
         if let denied = await requireWrites() { return denied }
-        await library.updateNotes(id: id, notes: note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : note)
-        return .success(AgentJSON.object(["id": id]))
+        guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        guard let bookmark = await ownedBookmark(id: id, userId: userId) else { return .failure(.notFound, payload: "not_found") }
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= AgentLimits.maxNoteCharacters else {
+            return .failure(.invalidArguments, payload: "note is longer than \(AgentLimits.maxNoteCharacters) characters")
+        }
+        await library.updateNotes(id: bookmark.id, notes: trimmed.isEmpty ? nil : trimmed)
+        return .success(AgentJSON.object(["id": bookmark.id]))
     }
 
     private func setFavorite(id: String, favorite: Bool) async -> AgentToolResult {
         if let denied = await requireWrites() { return denied }
-        await library.setFavorite(id: id, isFavorite: favorite)
-        return .success(AgentJSON.object(["id": id, "favorite": favorite]))
+        guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        guard let bookmark = await ownedBookmark(id: id, userId: userId) else { return .failure(.notFound, payload: "not_found") }
+        await library.setFavorite(id: bookmark.id, isFavorite: favorite)
+        return .success(AgentJSON.object(["id": bookmark.id, "favorite": favorite]))
     }
 
+    private func setReadLater(id: String, later: Bool) async -> AgentToolResult {
+        if let denied = await requireWrites() { return denied }
+        guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        guard let bookmark = await ownedBookmark(id: id, userId: userId) else { return .failure(.notFound, payload: "not_found") }
+        await library.setSavedForLater(id: bookmark.id, isSavedForLater: later)
+        return .success(AgentJSON.object(["id": bookmark.id, "later": later]))
+    }
+
+    /// Only this user's bookmarks, and only into a space that exists. A dangling space id would
+    /// hide the bookmarks from every space and from Unfiled.
     private func file(ids: [String], spaceId: String?) async -> AgentToolResult {
         if let denied = await requireWrites() { return denied }
-        await library.assignToSpace(ids: ids, spaceId: spaceId)
-        return .success(AgentJSON.object(["ids": ids]))
+        guard let userId = await library.currentUserId() else { return .failure(.notSignedIn) }
+        let wanted = AgentLookup.distinctIds(ids)
+        guard !wanted.isEmpty else { return .failure(.invalidArguments, payload: "ids is empty") }
+        guard wanted.count <= AgentLimits.maxIdsPerCall else {
+            return .failure(.invalidArguments, payload: "at most \(AgentLimits.maxIdsPerCall) ids per call")
+        }
+        let target = spaceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let space = (target?.isEmpty ?? true) ? nil : target
+        if let space {
+            let known = await library.spaces(userId: userId).contains { $0.id == space }
+            guard known else { return .failure(.notFound, payload: "space_not_found") }
+        }
+        let owned = Set(await library.allBookmarks(userId: userId).map(\.id))
+        let filed = wanted.filter { owned.contains($0) }
+        let missing = wanted.filter { !owned.contains($0) }
+        guard !filed.isEmpty else { return .failure(.notFound, payload: AgentJSON.ids(missing)) }
+        await library.assignToSpace(ids: filed, spaceId: space)
+        var result: [String: Any] = ["ids": filed, "spaceId": space ?? ""]
+        if !missing.isEmpty { result["missing"] = missing }
+        return .success(AgentJSON.object(result))
     }
 
     private func saveResearch(question: String, answer: String, ids: [String]) async -> AgentToolResult {
         if let denied = await requireWrites() { return denied }
+        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(.invalidArguments, payload: "answer is empty")
+        }
+        guard question.count <= AgentLimits.maxQuestionCharacters, answer.count <= AgentLimits.maxBookmarkCharacters else {
+            return .failure(.invalidArguments, payload: "question or answer is too long")
+        }
         let brief = ResearchBrief(answer: answer, claimBookmarkIds: ids, caveats: "", readingList: [], citationURLs: [], tier: "saved")
         let card = ResearchCard(id: "research_\(UUID().uuidString)", question: question, brief: brief, createdAt: Int64(Date().timeIntervalSince1970 * 1000))
         do {
@@ -386,7 +470,7 @@ struct LibraryAgentAPI: Sendable {
         }
         if uri.hasPrefix("curio://research/") {
             let id = String(uri.dropFirst("curio://research/".count))
-            guard let card = await library.researchCard(id: id) else { return .failure(.unknownTool, payload: "not_found") }
+            guard let card = await library.researchCard(id: id) else { return .failure(.notFound, payload: "not_found") }
             return .success(card.jsonText())
         }
         return .failure(.unknownTool, payload: uri)
@@ -435,13 +519,27 @@ private struct AgentArguments {
         object = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
     func string(_ key: String) -> String? { object[key] as? String }
+    /// Whole numbers only. A fraction, NaN, or a value past Int's range (1e300) is nil
+    /// rather than a trap.
     func int(_ key: String) -> Int? {
-        if let value = object[key] as? Int { return value }
-        if let value = object[key] as? Double { return Int(value) }
-        return nil
+        guard let number = object[key] as? NSNumber, !AgentArguments.isBool(number) else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite, value.rounded() == value,
+              value >= -9_007_199_254_740_992, value <= 9_007_199_254_740_992 else { return nil }
+        return Int(value)
     }
-    func bool(_ key: String) -> Bool? { object[key] as? Bool }
-    func strings(_ key: String) -> [String] { object[key] as? [String] ?? [] }
+    func bool(_ key: String) -> Bool? {
+        guard let number = object[key] as? NSNumber, AgentArguments.isBool(number) else { return nil }
+        return number.boolValue
+    }
+    static func isBool(_ number: NSNumber) -> Bool {
+        String(cString: number.objCType) == "c"
+    }
+    func strings(_ key: String) -> [String] {
+        if let many = object[key] as? [Any] { return many.compactMap { $0 as? String } }
+        if let one = object[key] as? String { return [one] }
+        return []
+    }
     func childString(_ key: String) -> String? {
         guard let child = object["arguments"] as? [String: Any] else { return nil }
         return child[key] as? String

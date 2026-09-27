@@ -41,6 +41,7 @@ jobs:
   ios-ci:
     name: iOS Test & Build
     runs-on: macos-26
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -74,6 +75,7 @@ jobs:
   macos-ci:
     name: macOS Test & Build
     runs-on: macos-26
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

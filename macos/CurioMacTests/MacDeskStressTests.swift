@@ -337,7 +337,8 @@ struct MacDeskStressTests {
         let totalClients = 36
         let results = await withTaskGroup(of: String.self) { group in
             for i in 0..<totalClients {
-                group.addTask {
+                // Blocking client I/O runs on its own thread, as a separate process would.
+                group.addTask { await ListenerRig.onThread {
                     let fd = AgentSocketIO.openClient(at: sock)
                     guard fd >= 0 else { return "refused" }
                     defer { close(fd) }
@@ -367,7 +368,7 @@ struct MacDeskStressTests {
                         let resp = AgentSocketIO.readLine(fd: fd)
                         return (resp?.contains("ok") == true) ? "valid_handled" : "other"
                     }
-                }
+                } }
             }
 
             var outcomes: [String] = []

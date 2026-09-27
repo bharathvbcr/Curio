@@ -175,6 +175,12 @@ final class RepositoryAgentLibrary: AgentLibrary, @unchecked Sendable {
         var values: [String] = []
         if let key = await tokenStore.getXaiKey(), !key.isEmpty { values.append(key) }
         if let token = await tokenStore.getHuggingFaceToken(), !token.isEmpty { values.append(token) }
+        if let access = await tokenStore.getAccessToken(), !access.isEmpty { values.append(access) }
+        if let refresh = await tokenStore.getRefreshToken(), !refresh.isEmpty { values.append(refresh) }
+        #if os(macOS)
+        let agentToken = MacAgentPreferences.token()
+        if !agentToken.isEmpty { values.append(agentToken) }
+        #endif
         return values
     }
 
@@ -192,6 +198,10 @@ final class RepositoryAgentLibrary: AgentLibrary, @unchecked Sendable {
 
     func assignToSpace(ids: [String], spaceId: String?) async {
         await repository.assignToSpace(ids: ids, spaceId: spaceId)
+    }
+
+    func setSavedForLater(id: String, isSavedForLater: Bool) async {
+        await repository.setSavedForLater(id: id, isSavedForLater: isSavedForLater)
     }
 
     func saveResearch(_ card: ResearchCard) async throws { try await cards.save(card) }
