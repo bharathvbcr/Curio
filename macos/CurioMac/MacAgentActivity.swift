@@ -1,8 +1,7 @@
 import Foundation
 
 /// One line of the agent audit log. Arguments are stored only as a hash.
-struct AgentAuditEntry: Equatable, Sendable, Identifiable {
-    var id: String { "\(stamp)|\(tool)|\(argumentHash)|\(outcome)" }
+struct AgentAuditEntry: Equatable, Sendable {
     var stamp: String
     var client: String
     var tool: String

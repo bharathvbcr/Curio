@@ -62,7 +62,8 @@ struct MacAgentSettings: View {
                     Text("No agent has called Curio yet.")
                         .foregroundStyle(colors.onSurfaceVariant)
                 } else {
-                    ForEach(activity) { entry in
+                    // Identical calls in the same second share every field, so rows key by position.
+                    ForEach(Array(activity.enumerated()), id: \.offset) { _, entry in
                         activityRow(entry)
                     }
                 }
