@@ -22,12 +22,19 @@ echo "Configuration:    ${CONFIGURATION}"
 
 mkdir -p "${OUTPUT_DIR}"
 
-# 1. Regenerate Xcode project with XcodeGen
+# 1. Ensure macOS app icon assets exist
+if [ ! -f "${MACOS_DIR}/CurioMac/AppIcon.icns" ] || [ ! -d "${MACOS_DIR}/CurioMac/Assets.xcassets/AppIcon.appiconset" ]; then
+    echo ""
+    echo "--> Generating macOS AppIcon assets..."
+    python3 "${ROOT_DIR}/tools/gen_mac_app_icon.py"
+fi
+
+# 2. Regenerate Xcode project with XcodeGen
 echo ""
 echo "--> Generating Xcode project..."
 (cd "${MACOS_DIR}" && xcodegen generate)
 
-# 2. Build the Mac app & embedded MCP tool
+# 3. Build the Mac app & embedded MCP tool
 echo ""
 echo "--> Building CurioMac (${CONFIGURATION})..."
 DERIVED_DATA="${OUTPUT_DIR}/DerivedData"
@@ -52,7 +59,7 @@ fi
 
 echo "Found built app at: ${BUILT_APP}"
 
-# 3. Inject OAuth Client if Info.plist needs updating
+# 4. Inject OAuth Client if Info.plist needs updating
 echo ""
 echo "--> Running OAuth Client injection..."
 TARGET_BUILD_DIR="${DERIVED_DATA}/Build/Products/${CONFIGURATION}" \
@@ -60,7 +67,14 @@ INFOPLIST_PATH="Curio.app/Contents/Info.plist" \
 SRCROOT="${MACOS_DIR}" \
 python3 "${SCRIPT_DIR}/inject_oauth_client.py"
 
-# 4. Inside-out Code Signing Pass with Hardened Runtime
+# 4b. Ensure AppIcon.icns is present in Resources
+if [ -f "${MACOS_DIR}/CurioMac/AppIcon.icns" ]; then
+    echo "--> Ensuring AppIcon.icns in ${BUILT_APP}/Contents/Resources..."
+    mkdir -p "${BUILT_APP}/Contents/Resources"
+    cp "${MACOS_DIR}/CurioMac/AppIcon.icns" "${BUILT_APP}/Contents/Resources/AppIcon.icns"
+fi
+
+# 5. Inside-out Code Signing Pass with Hardened Runtime
 echo ""
 echo "--> Performing inside-out codesigning..."
 
@@ -128,6 +142,9 @@ mkdir -p "${DMG_STAGING}"
 
 cp -R "${BUILT_APP}" "${DMG_STAGING}/Curio.app"
 ln -s /Applications "${DMG_STAGING}/Applications"
+if [ -f "${MACOS_DIR}/CurioMac/AppIcon.icns" ]; then
+    cp "${MACOS_DIR}/CurioMac/AppIcon.icns" "${DMG_STAGING}/.VolumeIcon.icns"
+fi
 
 DMG_PATH="${OUTPUT_DIR}/Curio-macOS.dmg"
 rm -f "${DMG_PATH}"

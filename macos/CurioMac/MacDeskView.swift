@@ -326,13 +326,25 @@ struct MacDeskView: View {
 
     private var sidebar: some View {
         List(selection: Binding<DeskScope?>(get: { scope }, set: { if let next = $0 { scope = next } })) {
+            Section {
+                HStack(spacing: 8) {
+                    CurioLogoMark(tint: colors.primary)
+                        .frame(width: 20, height: 20)
+                    Text("Curio")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+                .selectionDisabled()
+            }
             Section("Library") {
                 ForEach(DeskScope.sidebar, id: \.self) { item in
                     Label(MacDeskLibrary.scopeTitle(item, spaces: spaces), systemImage: MacDeskLibrary.scopeSymbol(item, spaces: spaces))
                         .badge(MacDeskLibrary.count(bookmarks, scope: item))
                         .tag(item)
                         .dropDestination(for: String.self) { ids, _ in
-                            dropped(ids, on: item)
+                            return dropped(ids, on: item)
                         }
                 }
             }
@@ -348,7 +360,7 @@ struct MacDeskView: View {
                         .tag(DeskScope.space(space.id))
                         .contextMenu { spaceMenu(space) }
                         .dropDestination(for: String.self) { ids, _ in
-                            dropped(ids, on: .space(space.id))
+                            return dropped(ids, on: .space(space.id))
                         }
                 }
             } header: {
