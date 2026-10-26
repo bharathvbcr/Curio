@@ -160,3 +160,9 @@ The guard blocks staging of `.env`, `*.jks`, `*.keystore`, and `local.properties
 For deep dives into the application architecture and development guidelines:
 - **Android Guidelines**: See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CHANGELOG.md`](CHANGELOG.md)
 - **iOS Guidelines**: See [`ios/docs/DESIGN.md`](ios/docs/DESIGN.md) and [`ios/docs/CONVENTIONS.md`](ios/docs/CONVENTIONS.md)
+
+## License & Acknowledgements
+
+Released under the [MIT License](LICENSE).
+
+- **[Semantic Router (`aurelio-labs/semantic-router`)](https://github.com/aurelio-labs/semantic-router)** (`Aurelio Labs`, MIT) — Inspired the on-device `ComplexityRouter` and `RagCompressor` architecture.
